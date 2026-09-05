@@ -23,7 +23,6 @@ def build_exe():
         "--noconfirm",
         "--clean",
         "--onedir",
-        "--windowed",
         "--add-data", f"{ROOT / 'studio-web'};studio-web",
         "--add-data", f"{ROOT / 'requirements.txt'};.",
         "--hidden-import", "llama_cpp",
