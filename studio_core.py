@@ -178,10 +178,13 @@ class StudioStore:
             return {"duplicate": True, "photo": self.photo(photo_id)}
         if len(self.state["photos"]) >= 100:
             raise ValueError("一件商品最多匯入 100 張照片，請先開始新商品")
-        with tempfile.NamedTemporaryFile(dir=self.folder, suffix=".incoming") as source:
-            source.write(raw)
-            source.flush()
-            image = read_image(Path(source.name), formats=INPUT_FORMATS)
+        tmp = tempfile.NamedTemporaryFile(dir=self.folder, suffix=".incoming", delete=False)
+        try:
+            tmp.write(raw)
+            tmp.close()
+            image = read_image(Path(tmp.name), formats=INPUT_FORMATS)
+        finally:
+            Path(tmp.name).unlink(missing_ok=True)
         if image.info.get("icc_profile"):
             try:
                 image = ImageCms.profileToProfile(image, ImageCms.ImageCmsProfile(io.BytesIO(image.info["icc_profile"])), SRGB, outputMode="RGB")
