@@ -11,7 +11,7 @@ import unittest
 from PIL import Image, ImageDraw
 
 from studio_core import StudioStore, render_pair
-from studio_server import Handler
+from studio_server import Handler, write_ai_log
 
 
 def picture(color, size=(180, 300), white=False):
@@ -45,6 +45,16 @@ class StudioTests(unittest.TestCase):
             self.store.import_photo("損壞.jpg", b"not a photo")
         with self.assertRaises(ValueError):
             self.store.import_photo("photo.svg", picture("red"))
+
+    def test_ai_log_records_diagnostics_without_source_image_data(self):
+        log_file = write_ai_log("run/windows-test", {
+            "event": "photo_finish", "outcome": "failed",
+            "attempts": [{"error": "invalid JSON", "response_excerpt": "bad output"}],
+        }, self.root / "logs")
+        entry = json.loads(Path(log_file).read_text(encoding="utf-8"))
+        self.assertEqual(entry["outcome"], "failed")
+        self.assertNotIn("windows-test", Path(log_file).name)
+        self.assertNotIn("data:image", Path(log_file).read_text(encoding="utf-8"))
 
     def test_reset_can_clean_working_photo_copies(self):
         self.assertTrue((self.store.folder / f'{self.a["id"]}.png').is_file())
@@ -106,16 +116,15 @@ class StudioTests(unittest.TestCase):
             crop, info = self.store.crop({**self.group["left"], "cut": False})
             self.assertEqual(crop.tobytes(), original.crop((0, 0, 180, 300)).tobytes())
 
-    def test_natural_layout_no_padding_no_upscale_and_correct_sides(self):
+    def test_natural_layout_equalizes_heights_without_upscale(self):
         image, info = self.store.compose(self.group, "natural")
         self.assertFalse(info["padding"])
         self.assertFalse(info["upscaled"])
-        self.assertEqual(image.size, (420, 400))
-        self.assertEqual(image.getpixel((0, 149)), (255, 255, 255))
-        self.assertEqual(image.getpixel((20, 150)), (255, 0, 0))
+        self.assertEqual(image.size, (330, 250))
+        self.assertEqual(image.getpixel((20, 0)), (255, 0, 0))
         self.assertEqual(image.getpixel((image.width - 1, image.height - 1)), (0, 0, 255))
-        self.assertEqual(info["placements"][0], [0, 150, 180, 250])
-        self.assertEqual(info["placements"][1], [180, 0, 240, 400])
+        self.assertEqual(info["placements"][0], [0, 0, 180, 250])
+        self.assertEqual(info["placements"][1], [180, 0, 150, 250])
         self.assertEqual(sum(p[2] for p in info["placements"]), image.width)
         swapped = {**self.group, "left": self.group["right"], "right": self.group["left"]}
         other, _ = self.store.compose(swapped, "natural")
@@ -129,7 +138,7 @@ class StudioTests(unittest.TestCase):
         self.assertTrue(second["reused"])
         path = Path(first["folder"])
         with Image.open(path / "拼圖-001.jpg") as image:
-            self.assertEqual(image.size, (420, 420))
+            self.assertEqual(image.size, (330, 330))
         self.assertGreater((path / "拼圖-001.jpg").stat().st_size, 0)
         self.assertFalse((path / "配對與裁切紀錄.json").exists())
         self.assertFalse((path / "所有圖片.zip").exists())
@@ -173,7 +182,7 @@ class StudioTests(unittest.TestCase):
         group = {**self.group, "preview_crop": [1000, 1000, 9000, 9000]}
         self.store.update({"product": "test", "groups": [group], "format": "square"})
         image, info = self.store.compose(group, "square")
-        self.assertEqual(image.size, (336, 336))
+        self.assertEqual(image.size, (264, 264))
         self.assertEqual(info["preview_crop"], [1000, 1000, 9000, 9000])
         restored = StudioStore(self.store.folder, self.store.output)
         self.assertEqual(restored.state["groups"][0]["preview_crop"], [1000, 1000, 9000, 9000])
@@ -208,7 +217,7 @@ class StudioTests(unittest.TestCase):
 
     def test_extreme_dimensions_are_preserved_instead_of_clipped(self):
         image, info = render_pair([Image.new("RGB", (1100, 1)), Image.new("RGB", (733, 999))], "square")
-        self.assertEqual(image.size, (1833, 1833))
+        self.assertEqual(image.size, (1101, 1101))
         self.assertFalse(info["upscaled"])
 
     def test_compose_preview_downscales_large_output(self):

@@ -1,6 +1,7 @@
 """Loopback-only desktop studio UI. No external network or shell execution from input."""
 import argparse
 import base64
+import hashlib
 import http.client
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import io
@@ -24,6 +25,48 @@ if getattr(sys, 'frozen', False):
     WEB = Path(getattr(sys, '_MEIPASS', ROOT)) / "studio-web"
 else:
     WEB = ROOT / "studio-web"
+
+AI_LOG_DIR = ROOT / "logs"
+AI_LOG_LOCK = threading.Lock()
+
+
+def _ai_attempt_summary(attempt):
+    raw = attempt.get("raw_response")
+    if raw is None:
+        excerpt = None
+    elif isinstance(raw, str):
+        excerpt = raw[:2000]
+    else:
+        excerpt = json.dumps(raw, ensure_ascii=False, default=str)[:2000]
+    return {
+        "engine": attempt.get("engine"),
+        "seconds": attempt.get("seconds"),
+        "error": attempt.get("error"),
+        "rejected_issues": attempt.get("rejected_issues", []),
+        "response_excerpt": excerpt,
+    }
+
+
+def write_ai_log(run_id, event, log_dir=None):
+    """Append one bounded diagnostic event without recording source image data."""
+    folder = Path(log_dir or AI_LOG_DIR)
+    suffix = hashlib.sha256(run_id.encode("utf-8")).hexdigest()[:12]
+    path = folder / f"ai-{time.strftime('%Y%m%d')}-{suffix}.jsonl"
+    entry = {
+        "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+        "run_id": run_id,
+        **event,
+    }
+    try:
+        folder.mkdir(parents=True, exist_ok=True)
+        line = json.dumps(entry, ensure_ascii=False, default=str) + "\n"
+        with AI_LOG_LOCK:
+            with path.open("a", encoding="utf-8") as stream:
+                stream.write(line)
+    except OSError as exc:
+        print(f"AI 診斷紀錄寫入失敗：{exc}", flush=True)
+        return None
+    return str(path)
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -153,7 +196,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.send({"image": "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode(), "size": list(image.size), **info})
             elif route.path == "/api/ai-cancel":
                 run_id = data.get("run_id") if isinstance(data, dict) else None
-                if not isinstance(run_id, str) or not run_id:
+                if not isinstance(run_id, str) or not run_id or len(run_id) > 100:
                     raise ValueError("AI 分析批次格式無效")
                 cancelled = getattr(self.server, "ai_cancelled", OrderedDict())
                 now = time.monotonic()
@@ -164,7 +207,8 @@ class Handler(BaseHTTPRequestHandler):
                 while len(cancelled) > 200:
                     cancelled.popitem(last=False)
                 self.server.ai_cancelled = cancelled
-                self.send({"cancelled": True, "run_id": run_id})
+                log_file = write_ai_log(run_id, {"event": "cancel_requested"})
+                self.send({"cancelled": True, "run_id": run_id, "log_file": log_file})
             elif route.path == "/api/ai-crop":
                 if not isinstance(data, dict):
                     raise ValueError("AI 分析資料格式無效")
@@ -172,8 +216,16 @@ class Handler(BaseHTTPRequestHandler):
                 if ids is not None and (not isinstance(ids, list) or any(not isinstance(x, str) for x in ids)):
                     raise ValueError("照片清單格式無效")
                 run_id = data.get("run_id")
-                if not isinstance(run_id, str) or not run_id:
+                if not isinstance(run_id, str) or not run_id or len(run_id) > 100:
                     raise ValueError("AI 分析批次格式無效")
+                batch_index = data.get("batch_index")
+                batch_total = data.get("batch_total")
+                if batch_index is not None and (not isinstance(batch_index, int) or batch_index < 1):
+                    raise ValueError("AI 分析進度格式無效")
+                if batch_total is not None and (not isinstance(batch_total, int) or batch_total < 1):
+                    raise ValueError("AI 分析進度格式無效")
+                if batch_index is not None and batch_total is not None and batch_index > batch_total:
+                    raise ValueError("AI 分析進度格式無效")
                 if run_id in getattr(self.server, "ai_cancelled", set()):
                     self.send({"cancelled": True, "run_id": run_id, "results": []})
                     return
@@ -185,6 +237,13 @@ class Handler(BaseHTTPRequestHandler):
                 for item in photos:
                     image_path = store.folder / f'{item["id"]}.png'
                     image = read_image(image_path, formats=("PNG",))
+                    engine, engine_detail = detect_engine()
+                    log_file = write_ai_log(run_id, {
+                        "event": "photo_start", "batch_index": batch_index,
+                        "batch_total": batch_total, "photo_id": item["id"],
+                        "photo_name": item["name"], "image_size": list(image.size),
+                        "engine": engine, "engine_detail": engine_detail,
+                    })
                     ai_lock = getattr(self.server, "ai_lock", None)
                     if ai_lock:
                         with ai_lock:
@@ -204,11 +263,33 @@ class Handler(BaseHTTPRequestHandler):
                     if analysis and crop_box[1] > 0 and unsafe.intersection(issues):
                         issues = [issue for issue in issues if issue not in unsafe]
                         issues.append("模型裁線不安全，已改用保守裁線並保留下半臉")
+                    if not analysis:
+                        outcome = "failed"
+                    elif crop_box[1] <= 0:
+                        outcome = "no_crop"
+                    elif issues:
+                        outcome = "review"
+                    else:
+                        outcome = "safe"
+                    log_file = write_ai_log(run_id, {
+                        "event": "photo_finish", "batch_index": batch_index,
+                        "batch_total": batch_total, "photo_id": item["id"],
+                        "photo_name": item["name"], "outcome": outcome,
+                        "crop_top": crop_box[1], "issues": issues,
+                        "cache_hit": result.get("cache_hit", False),
+                        "seconds": result.get("seconds_this_run", 0),
+                        "attempts": [_ai_attempt_summary(attempt) for attempt in result.get("attempts", [])],
+                    }) or log_file
                     results.append({"id": item["id"], "name": item["name"], "analysis": analysis,
                                     "issues": issues, "cache_hit": result.get("cache_hit", False),
                                     "seconds": result.get("seconds_this_run", 0), "crop_box": crop_box,
                                     "model": MODEL})
-                self.send({"results": results, "model": MODEL, "run_id": run_id})
+                if batch_total is not None and batch_index == batch_total:
+                    log_file = write_ai_log(run_id, {
+                        "event": "run_complete", "batch_total": batch_total,
+                    }) or log_file
+                self.send({"results": results, "model": MODEL, "run_id": run_id,
+                           "log_file": log_file})
             elif route.path == "/api/export":
                 result = store.export()
                 self.server.exports.add(result["batch"])

@@ -35,7 +35,8 @@ let previewTimer,
   aiRunToken = 0,
   aiFilter = "all",
   aiController = null,
-  aiRunId = null;
+  aiRunId = null,
+  aiLogFile = null;
 const photo = (id) => state.photos.find((p) => p.id === id);
 const photoBaseBox = (id) => {
   const p = photo(id);
@@ -45,6 +46,46 @@ const photoBaseBox = (id) => {
   return [p.white[0], top, p.white[1], p.height];
 };
 const cropVersions = new Map();
+const pairPreviewCache = new Map();
+const pairPreviewRequests = new Map();
+const pairPreviewKey = (group) =>
+  JSON.stringify({ group, format: state.format });
+function invalidatePairPreview(groupId) {
+  pairPreviewCache.delete(groupId);
+  const request = pairPreviewRequests.get(groupId);
+  request?.controller.abort();
+  pairPreviewRequests.delete(groupId);
+}
+function requestPairPreview(group) {
+  if (!group || !state) return;
+  const id = group.id,
+    key = pairPreviewKey(group),
+    cached = pairPreviewCache.get(id),
+    pending = pairPreviewRequests.get(id);
+  if (cached?.key === key || pending?.key === key) return;
+  pending?.controller.abort();
+  const controller = new AbortController();
+  pairPreviewRequests.set(id, { key, controller });
+  const requestGroup = JSON.parse(JSON.stringify(group));
+  api(
+    "/api/preview",
+    { group: requestGroup, format: state.format },
+    { signal: controller.signal },
+  )
+    .then((result) => {
+      const currentGroup = state.groups.find((item) => item.id === id);
+      if (!currentGroup || pairPreviewKey(currentGroup) !== key) return;
+      pairPreviewCache.set(id, { key, image: result.image });
+      renderTray();
+    })
+    .catch((error) => {
+      if (error.name !== "AbortError") return;
+    })
+    .finally(() => {
+      if (pairPreviewRequests.get(id)?.controller === controller)
+        pairPreviewRequests.delete(id);
+    });
+}
 const photoSrc = (id) => {
   const hasCrop = state.photo_crops?.[id];
   const hasAi = state.ai_crops?.[id];
@@ -414,7 +455,8 @@ function renderAiResults() {
   const container = $("#ai-results");
   aiResults = aiResults.filter((x) => photo(x.id));
   const proposed = aiResults.filter((x) => x.analysis && x.crop_box[1] > 0);
-  if (!proposed.length) {
+  const failed = aiResults.filter((x) => !x.analysis);
+  if (!proposed.length && !failed.length) {
     container.hidden = true;
     container.replaceChildren();
     return;
@@ -425,7 +467,7 @@ function renderAiResults() {
   const selectAllLabel = node("label", null, "ai-select-all");
   const selectAll = node("input");
   selectAll.type = "checkbox";
-  selectAll.checked = proposed.every((x) => x.apply);
+  selectAll.checked = proposed.length > 0 && proposed.every((x) => x.apply);
   selectAll.indeterminate = proposed.some((x) => x.apply) && !selectAll.checked;
   selectAll.onchange = () => {
     proposed.forEach((x) => {
@@ -447,10 +489,16 @@ function renderAiResults() {
   filterLabel.append(filter, node("span", "只看需確認"));
   tools.append(selectAllLabel, filterLabel);
   const visible =
-    aiFilter === "review" ? proposed.filter((x) => x.issues?.length) : proposed;
+    aiFilter === "review"
+      ? [...proposed.filter((x) => x.issues?.length), ...failed]
+      : [...proposed, ...failed];
   const list = node("div", null, "ai-result-list");
   for (const result of visible) {
-    const item = node("label", null, "ai-result");
+    const item = node(
+      "label",
+      null,
+      `ai-result${result.analysis ? "" : " ai-result-failed"}`,
+    );
     if (result.apply == null) result.apply = true;
     const checkbox = node("input");
     checkbox.type = "checkbox";
@@ -468,9 +516,11 @@ function renderAiResults() {
     const detail = node("span", null, "ai-result-detail");
     detail.append(node("strong", result.name));
     const analysis = result.analysis;
-    const status = result.applied
-      ? "已套用裁切建議"
-      : `建議移除上方 ${result.crop_box[1]} px`;
+    const status = !analysis
+      ? "辨識失敗"
+      : result.applied
+        ? "已套用裁切建議"
+        : `建議移除上方 ${result.crop_box[1]} px`;
     detail.append(node("span", status));
     if (result.issues?.length)
       detail.append(node("small", result.issues.join("；")));
@@ -516,6 +566,12 @@ async function applyAiCrops() {
   }
   for (const result of aiResults)
     if (appliedIds.has(result.id)) result.applied = true;
+  for (const id of appliedIds) {
+    cropVersions.set(id, Date.now());
+    for (const group of state.groups)
+      if ([group.left.photo, group.right.photo].includes(id))
+        invalidatePairPreview(group.id);
+  }
   for (const group of state.groups)
     for (const sideKey of ["left", "right"]) {
       const s = group[sideKey],
@@ -534,7 +590,11 @@ async function applyAiCrops() {
     }
   invalidateExport();
   renderLibrary();
+  renderTray();
   renderEditor();
+  for (const group of state.groups)
+    if ([group.left.photo, group.right.photo].some((id) => appliedIds.has(id)))
+      requestPairPreview(group);
   try {
     await persist();
   } catch (error) {
@@ -555,8 +615,10 @@ function cancelAiAnalysis(showStatus = true) {
   if (runId) api("/api/ai-cancel", { run_id: runId }).catch(() => {});
   aiBusy = false;
   aiResults = [];
+  aiLogFile = null;
   aiFilter = "all";
   $("#ai-progress").textContent = showStatus ? "分析已取消" : "";
+  $("#ai-progress").title = "";
   renderAiResults();
   message("");
   updateActions();
@@ -606,11 +668,19 @@ function renderTray() {
     button.setAttribute("aria-current", String(active === g.id));
     button.dataset.groupId = g.id;
     const mini = node("span", null, "pair-mini");
-    for (const s of [g.left, g.right]) {
-      const image = node("img");
-      image.src = photoSrc(s.photo);
-      image.alt = photo(s.photo).name;
+    const cached = pairPreviewCache.get(g.id);
+    if (cached?.key === pairPreviewKey(g)) {
+      const image = node("img", null, "pair-preview");
+      image.src = cached.image;
+      image.alt = `第 ${index + 1} 組拼圖預覽`;
       mini.append(image);
+    } else {
+      for (const s of [g.left, g.right]) {
+        const image = node("img");
+        image.src = photoSrc(s.photo);
+        image.alt = photo(s.photo).name;
+        mini.append(image);
+      }
     }
     button.append(mini, node("span", `第 ${index + 1} 組`, "pair-label"));
     button.onclick = () => {
@@ -646,6 +716,7 @@ function removePair(id) {
   if (index < 0) return;
   const focusInTray = $("#pair-tray").contains(document.activeElement);
   state.groups.splice(index, 1);
+  invalidatePairPreview(id);
   if (active === id) {
     active = null;
     selected = [];
@@ -714,6 +785,11 @@ async function applySingleCrop() {
   invalidateExport();
   singleCropBeforeEdit = [...box];
   renderLibrary();
+  const affectedGroups = state.groups.filter((group) =>
+    [group.left.photo, group.right.photo].includes(id),
+  );
+  affectedGroups.forEach((group) => invalidatePairPreview(group.id));
+  renderTray();
   renderEditor();
   try {
     await persist();
@@ -721,6 +797,7 @@ async function applySingleCrop() {
     message("裁切已更新但保存失敗：" + error.message, true);
     return;
   }
+  affectedGroups.forEach(requestPairPreview);
   message(`已套用裁切${state.groups.filter((g) => [g.left.photo, g.right.photo].includes(id)).length ? "，相關拼圖也已更新" : ""}`);
 }
 function cancelSingleCrop() {
@@ -843,6 +920,7 @@ function cropEditor(s, key, options = {}) {
     s.box = clampBox(s.box);
     sync();
     invalidateExport();
+    if (active && !single) invalidatePairPreview(active);
     if (single) scheduleSinglePreview();
     else schedulePreview();
     if (active && !single) persist();
@@ -981,6 +1059,7 @@ function movePreviewCrop(name, x, y) {
     next[{ top: 1, bottom: 3 }[vertical]] = Math.round(y);
   }
   group.preview_crop = previewCropClamp(next);
+  invalidatePairPreview(group.id);
   syncPreviewCropBox();
   invalidateExport();
   schedulePreview();
@@ -1047,6 +1126,7 @@ function initPreviewCrop() {
       set(vertical);
       if (horizontal) set(horizontal);
       group.preview_crop = previewCropClamp(next);
+      invalidatePairPreview(group.id);
       syncPreviewCropBox();
       invalidateExport();
       schedulePreview();
@@ -1140,6 +1220,13 @@ function schedulePreview(delay = 160) {
       $("#preview").src = result.image;
       $("#preview-frame").hidden = false;
       $("#preview-empty").hidden = true;
+      if (!previewCropMode) {
+        pairPreviewCache.set(group.id, {
+          key: pairPreviewKey(group),
+          image: result.image,
+        });
+        renderTray();
+      }
       requestAnimationFrame(syncPreviewCropBox);
     } catch (error) {
       if (error.name !== "AbortError" && serial === previewSerial) {
@@ -1341,6 +1428,8 @@ $("#preview-crop-toggle").onclick = () => {
       : null;
     if (!current().preview_crop) current().preview_crop = [0, 0, 10000, 10000];
   } else previewCropBeforeEdit = null;
+  invalidatePairPreview(current().id);
+  renderTray();
   updateActions();
   schedulePreview(0);
   if (active) persist();
@@ -1353,6 +1442,8 @@ $("#preview-crop-reset").onclick = () => {
   previewCropMode = false;
   previewBaseSize = null;
   previewCropBeforeEdit = null;
+  invalidatePairPreview(group.id);
+  renderTray();
   $("#preview-crop-box").hidden = true;
   updateActions();
   invalidateExport();
@@ -1374,9 +1465,11 @@ $("#reset").onclick = async () => {
   setBusy(true);
   cancelAiAnalysis(false);
   aiResults = [];
+  aiLogFile = null;
   aiFilter = "all";
   deleteMode = false;
   $("#ai-progress").textContent = "";
+  $("#ai-progress").title = "";
   renderAiResults();
   try {
     await flushSaves();
@@ -1424,8 +1517,10 @@ $("#ai-analyze").onclick = async () => {
   const runToken = ++aiRunToken;
   const runId = crypto.randomUUID();
   aiRunId = runId;
+  aiLogFile = null;
   aiResults = [];
   $("#ai-progress").textContent = `準備分析 ${state.photos.length} 張照片…`;
+  $("#ai-progress").title = "";
   renderAiResults();
   updateActions();
   try {
@@ -1437,10 +1532,16 @@ $("#ai-analyze").onclick = async () => {
       $("#ai-progress").textContent = progress;
       const result = await api(
         "/api/ai-crop",
-        { photo_ids: [photos[index].id], run_id: runId },
+        {
+          photo_ids: [photos[index].id],
+          run_id: runId,
+          batch_index: index + 1,
+          batch_total: photos.length,
+        },
         { signal: aiController.signal },
       );
       if (runToken !== aiRunToken || result.cancelled) return;
+      if (result.log_file) aiLogFile = result.log_file;
       const item = result.results[0];
       item.apply = !!item.analysis && item.crop_box[1] > 0;
       aiResults.push(item);
@@ -1449,8 +1550,14 @@ $("#ai-analyze").onclick = async () => {
     }
     const proposed = aiResults.filter((x) => x.analysis && x.crop_box[1] > 0);
     const safe = proposed.filter((x) => !x.issues?.length).length;
+    const failed = aiResults.filter((x) => !x.analysis).length;
+    const counts = proposed.length || failed
+      ? `安全 ${safe} 張、需確認 ${proposed.length - safe} 張、辨識失敗 ${failed} 張`
+      : "沒有裁切建議";
     $("#ai-progress").textContent =
-      `分析完成 ${aiResults.length} / ${photos.length} 張（安全 ${safe} 張、需確認 ${proposed.length - safe} 張）`;
+      `分析完成 ${aiResults.length} / ${photos.length} 張（${counts}）` +
+      (aiLogFile ? " · 診斷紀錄已保存於 logs 資料夾" : "");
+    $("#ai-progress").title = aiLogFile ? `診斷紀錄：${aiLogFile}` : "";
     message("");
   } catch (error) {
     if (error.name !== "AbortError" && runToken === aiRunToken)
