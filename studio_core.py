@@ -27,6 +27,17 @@ PREVIEW_MAX_EDGE = 1600
 def render_pair(images, mode="square"):
     if mode not in FORMATS or len(images) != 2:
         raise ValueError("請選兩張照片與有效的輸出比例")
+    # Equalize heights so both images appear proportionally the same size side by side.
+    # Use the smaller height to avoid upscaling.
+    target_h = min(im.height for im in images)
+    equalized = []
+    for im in images:
+        if im.height != target_h:
+            scale = target_h / im.height
+            new_w = max(1, round(im.width * scale))
+            im = im.resize((new_w, target_h), Image.Resampling.LANCZOS)
+        equalized.append(im)
+    images = equalized
     widths = [im.width for im in images]
     heights = [im.height for im in images]
     content_width, content_height = sum(widths), max(heights)

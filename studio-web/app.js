@@ -44,8 +44,14 @@ const photoBaseBox = (id) => {
   const top = state.ai_crops?.[id] || 0;
   return [p.white[0], top, p.white[1], p.height];
 };
-const photoSrc = (id) =>
-  `/api/photo/${id}${state.photo_crops?.[id] ? "?view=crop" : state.ai_crops?.[id] ? "?view=ai" : ""}`;
+const cropVersions = new Map();
+const photoSrc = (id) => {
+  const hasCrop = state.photo_crops?.[id];
+  const hasAi = state.ai_crops?.[id];
+  const view = hasCrop ? "?view=crop" : hasAi ? "?view=ai" : "";
+  const ts = cropVersions.has(id) ? `${view ? "&" : "?"}t=${cropVersions.get(id)}` : "";
+  return `/api/photo/${id}${view}${ts}`;
+};
 const side = (id) => {
   return { photo: id, box: photoBaseBox(id) };
 };
@@ -697,6 +703,7 @@ async function applySingleCrop() {
   state.photo_crops = state.photo_crops || {};
   if (isOriginal) delete state.photo_crops[id];
   else state.photo_crops[id] = box;
+  cropVersions.set(id, Date.now());
   delete (state.ai_crops || {})[id];
   for (const group of state.groups)
     for (const key of ["left", "right"])
