@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import secrets
 import subprocess
+import sys
 import threading
 from urllib.parse import urlsplit, parse_qs, unquote
 import webbrowser
@@ -240,6 +241,9 @@ def main():
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument("--open", action="store_true")
     args = parser.parse_args()
+    # Auto-open browser when running as PyInstaller bundle
+    if getattr(sys, 'frozen', False) and not args.open:
+        args.open = True
     try:
         server = StudioHTTPServer(("127.0.0.1", args.port), Handler)
     except OSError:

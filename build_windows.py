@@ -50,22 +50,13 @@ def copy_files():
     (DIST / "使用者照片").mkdir(exist_ok=True)
     (DIST / "outputs").mkdir(exist_ok=True)
 
-    # Create launcher batch file
-    launcher = DIST / "啟動服飾圖片工作室.bat"
-    launcher.write_text(
-        '@echo off\n'
-        'cd /d "%~dp0"\n'
-        'start "" "服飾圖片工作室.exe"\n',
-        encoding="utf-8"
-    )
-
     # Create README
     readme = DIST / "使用說明.txt"
     readme.write_text(
         "服飾圖片工作室 - Windows 可攜版\n"
         "================================\n\n"
         "1. 將 Qwen3.5-2B 的 .gguf 模型檔放入 models 資料夾\n"
-        "2. 雙擊「啟動服飾圖片工作室.bat」或「服飾圖片工作室.exe」\n"
+        "2. 雙擊「服飾圖片工作室.exe」\n"
         "3. 瀏覽器會自動開啟操作介面\n"
         "4. 照片請放入「使用者照片」資料夾\n"
         "5. 匯出的圖片會在「outputs」資料夾\n\n"
