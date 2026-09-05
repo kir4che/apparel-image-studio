@@ -118,7 +118,7 @@ class StudioStore:
         for suffix in (".png", "-thumb.jpg"):
             try:
                 (self.folder / f"{photo_id}{suffix}").unlink()
-            except FileNotFoundError:
+            except OSError:
                 pass
 
     def _remove_all_photo_files(self):
@@ -184,7 +184,10 @@ class StudioStore:
             tmp.close()
             image = read_image(Path(tmp.name), formats=INPUT_FORMATS)
         finally:
-            Path(tmp.name).unlink(missing_ok=True)
+            try:
+                Path(tmp.name).unlink()
+            except OSError:
+                pass
         if image.info.get("icc_profile"):
             try:
                 image = ImageCms.profileToProfile(image, ImageCms.ImageCmsProfile(io.BytesIO(image.info["icc_profile"])), SRGB, outputMode="RGB")

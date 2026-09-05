@@ -1170,7 +1170,11 @@ async function importFiles(list) {
   const folderNames = new Set(
     files
       .map((f) =>
-        (f.webkitRelativePath || "").split("/").slice(0, -1).join("/"),
+        (f.webkitRelativePath || "")
+          .replace(/\\/g, "/")
+          .split("/")
+          .slice(0, -1)
+          .join("/"),
       )
       .filter(Boolean),
   );
@@ -1223,7 +1227,7 @@ async function importFiles(list) {
     const initial = state.photos.length === 0;
     await refresh();
     if (initial && folderNames.size === 1) {
-      state.product = [...folderNames][0].split("/").pop().slice(0, 80);
+      state.product = [...folderNames][0].replace(/\\/g, "/").split("/").pop().slice(0, 80);
       $("#product").value = state.product;
       await persist();
     }

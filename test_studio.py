@@ -326,6 +326,29 @@ class StudioTests(unittest.TestCase):
         finally:
             server.shutdown(); server.server_close(); thread.join()
 
+    def test_delete_photo_handles_oserror(self):
+        with unittest.mock.patch("pathlib.Path.unlink", side_effect=PermissionError("Locked on Windows")):
+            # Deleting a photo should not crash if underlying unlink encounters OSError (PermissionError)
+            deleted = self.store.delete_photo(self.a["id"])
+            self.assertEqual(deleted["id"], self.a["id"])
+
+    def test_atomic_json_retries_on_oserror(self):
+        from garment_pilot import atomic_json
+        attempts = 0
+        orig_replace = Path.replace
+        def mock_replace(self, target):
+            nonlocal attempts
+            attempts += 1
+            if attempts < 3:
+                raise PermissionError("WinError 32: File locked by another process")
+            return orig_replace(self, target)
+
+        target_file = self.root / "test_atomic.json"
+        with unittest.mock.patch.object(Path, "replace", mock_replace):
+            atomic_json(target_file, {"status": "ok"})
+        self.assertEqual(attempts, 3)
+        self.assertTrue(target_file.is_file())
+
 
 if __name__ == "__main__":
     unittest.main()

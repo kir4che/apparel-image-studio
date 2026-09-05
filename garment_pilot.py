@@ -17,9 +17,16 @@ import warnings
 
 from PIL import Image, ImageDraw, ImageOps
 
-ROOT = Path(__file__).resolve().parent
+import sys
+
+if getattr(sys, "frozen", False):
+    ROOT = Path(sys.executable).resolve().parent
+else:
+    ROOT = Path(__file__).resolve().parent
+
 MODEL = "qwen3.5-2b"
 MODEL_DIR = ROOT / "models"
+MODEL_FILE = MODEL_DIR / "model.gguf"
 CONFIG_FILE = ROOT / "config.json"
 VERSION = "gate-v8-top-strip-1024-preview"
 CACHE_MAX_AGE_SECONDS = 30 * 24 * 60 * 60
@@ -158,6 +165,9 @@ def lm_studio_request(payload):
         raise ModelServiceUnavailable(f"LM Studio response unavailable: {exc}") from exc
 
 
+local_request = lm_studio_request
+
+
 def detect_engine():
     engine = get_engine()
     if engine == "lmstudio":
@@ -271,7 +281,14 @@ def atomic_json(path: Path, data):
     with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=path.parent, delete=False, suffix=".tmp") as f:
         json.dump(data, f, ensure_ascii=False, indent=2, allow_nan=False)
         temp = Path(f.name)
-    temp.replace(path)
+    for attempt in range(5):
+        try:
+            temp.replace(path)
+            return
+        except OSError:
+            if attempt == 4:
+                raise
+            time.sleep(0.05)
 
 
 def prune_cache(cache_dir: Path, max_age_seconds=CACHE_MAX_AGE_SECONDS, max_bytes=CACHE_MAX_BYTES):
@@ -308,7 +325,7 @@ def prune_cache(cache_dir: Path, max_age_seconds=CACHE_MAX_AGE_SECONDS, max_byte
     return removed
 
 
-def analyze(image: Image.Image, source_hash: str, product: str, cache_dir: Path, model_identity: str):
+def analyze(image: Image.Image, source_hash: str, product: str, cache_dir: Path, model_identity: str, requester=None):
     identity = {"source": source_hash, "product": product, "model": model_identity,
                 "version": VERSION, "system": SYSTEM, "schema": SCHEMA, "preview": 1024}
     key = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()
@@ -339,7 +356,25 @@ def analyze(image: Image.Image, source_hash: str, product: str, cache_dir: Path,
         tick = time.monotonic()
         raw = None
         try:
-            if engine == "lmstudio":
+            if requester is not None:
+                payload = {"model": MODEL, "system_prompt": SYSTEM,
+                    "input": [{"type": "text", "content": prompt},
+                              {"type": "image", "data_url": data_url}],
+                    "temperature": 0, "max_output_tokens": 700, "stream": False,
+                    "reasoning": "off", "store": False, "integrations": []}
+                raw = requester(payload)
+                if isinstance(raw, str):
+                    content = raw.strip()
+                elif isinstance(raw, dict):
+                    if raw.get("stats", {}).get("total_output_tokens", 0) >= payload.get("max_output_tokens", 700):
+                        raise ValueError("Model output was truncated")
+                    out = raw.get("output", [])
+                    if any(x.get("type") == "tool_call" for x in out if isinstance(x, dict)):
+                        raise ValueError("Model attempted tool call")
+                    content = "".join(x.get("content", "") for x in out if isinstance(x, dict) and x.get("type") == "message").strip()
+                else:
+                    raise ValueError("Unexpected model output format")
+            elif engine == "lmstudio":
                 payload = {"model": MODEL, "system_prompt": SYSTEM,
                     "input": [{"type": "text", "content": prompt},
                               {"type": "image", "data_url": data_url}],

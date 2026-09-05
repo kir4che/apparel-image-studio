@@ -20,7 +20,10 @@ from PIL import Image
 from garment_pilot import MODEL, ROOT, analyze, detect_engine, digest, get_engine, prune_cache, read_image, set_engine, top_only_crop_box
 from studio_core import StudioStore
 
-WEB = ROOT / "studio-web"
+if getattr(sys, 'frozen', False):
+    WEB = Path(getattr(sys, '_MEIPASS', ROOT)) / "studio-web"
+else:
+    WEB = ROOT / "studio-web"
 
 
 class Handler(BaseHTTPRequestHandler):
