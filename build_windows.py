@@ -5,6 +5,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+sys.stdout.reconfigure(encoding='utf-8')
+
 ROOT = Path(__file__).resolve().parent
 DIST = ROOT / "dist" / "服飾圖片工作室"
 BUILD = ROOT / "build"
@@ -22,8 +24,8 @@ def build_exe():
         "--clean",
         "--onedir",
         "--windowed",
-        "--add-data", f"{ROOT / 'work' / 'studio-web'};studio-web",
-        "--add-data", f"{ROOT / 'work' / 'requirements.txt'};.",
+        "--add-data", f"{ROOT / 'studio-web'};studio-web",
+        "--add-data", f"{ROOT / 'requirements.txt'};.",
         "--hidden-import", "llama_cpp",
         "--hidden-import", "PIL",
         str(ROOT / "studio_server.py"),
