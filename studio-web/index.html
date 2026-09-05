@@ -1,0 +1,224 @@
+<!doctype html>
+<html lang="zh-Hant">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <meta name="color-scheme" content="light" />
+    <title>服飾圖片工作室</title>
+    <link rel="stylesheet" href="/style.css" />
+    <link rel="stylesheet" href="/ai.css" />
+    <script src="/app.js" defer></script>
+  </head>
+  <body>
+    <!-- THESIS: A photo workbench: choose two pictures and see the actual collage.
+  OWN-WORLD: Cool grey workspace, white photo surfaces, restrained blue actions, blue crop frame.
+  STORY: Import one product, pick a pair, inspect it, collect pairs, export locally.
+  FIRST VIEWPORT: A thumbnail library at left and equal-height collage preview at right; studio below preview, export in the completed-pair tray.
+  FORM: Operate workbench, code-led; concept-seed returned no key. Signature interaction: drag the crop frame edges or corners directly on the source photo.
+  FINISH: unreviewed and undocumented is unfinished; this build ends with the finish review, the verdict, DESIGN.md, and every shipping raster carrying its provenance -->
+    <svg class="symbols" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+      <defs>
+        <symbol id="i-pair" viewBox="0 0 24 24">
+          <rect x="3" y="4" width="8" height="16" rx="1.5" />
+          <rect x="13" y="4" width="8" height="16" rx="1.5" />
+        </symbol>
+        <symbol id="i-plus" viewBox="0 0 24 24">
+          <path d="M12 5v14M5 12h14" />
+        </symbol>
+        <symbol id="i-close" viewBox="0 0 24 24">
+          <path d="m6 6 12 12M18 6 6 18" />
+        </symbol>
+        <symbol id="i-folder" viewBox="0 0 24 24">
+          <path d="M3 7V5h6l2 2h10v12H3Z" />
+          <path d="M3 10h18" />
+        </symbol>
+        <symbol id="i-swap" viewBox="0 0 24 24">
+          <path d="M4 8h15m-4-4 4 4-4 4M20 16H5m4-4-4 4 4 4" />
+        </symbol>
+        <symbol id="i-download" viewBox="0 0 24 24">
+          <path d="M12 3v12m-5-5 5 5 5-5M4 16v5h16v-5" />
+        </symbol>
+      </defs>
+    </svg>
+    <header class="app-header">
+      <div class="identity">
+        <svg class="brand-mark"><use href="#i-pair" /></svg>
+        <div><h1>服飾圖片工作室</h1></div>
+      </div>
+      <div class="header-actions">
+        <button id="reset" class="quiet">開始新商品</button>
+      </div>
+    </header>
+    <main>
+      <div class="workbench-status">
+        <div id="notice" class="notice" role="status" aria-live="polite">
+          正在開啟工作桌…
+        </div>
+        <div class="editor-save-status">
+          <span id="save-status" class="save-status">本機自動保存</span>
+        </div>
+      </div>
+      <div class="workbench">
+        <section class="library" aria-labelledby="library-title">
+          <div class="section-heading">
+            <div>
+              <h2 id="library-title">
+                商品照片 <span id="photo-count" class="photo-count">0 張</span>
+              </h2>
+            </div>
+            <div class="import-actions">
+              <button id="folder-button">
+                <svg><use href="#i-folder" /></svg>匯入資料夾</button
+              ><button id="files-button" class="quiet">選擇照片</button>
+            </div>
+          </div>
+          <input
+            id="folder-input"
+            class="file-input"
+            type="file"
+            webkitdirectory
+            multiple
+            aria-label="選擇商品圖片資料夾"
+          />
+          <input
+            id="files-input"
+            class="file-input"
+            type="file"
+            accept="image/jpeg,image/png,image/webp,image/avif,image/bmp,image/tiff,image/gif,.jpg,.jpeg,.png,.webp,.avif,.bmp,.tif,.tiff,.gif"
+            multiple
+            aria-label="選擇商品照片"
+          />
+          <div class="product-field">
+            <label for="product">商品名稱</label
+            ><input
+              id="product"
+              type="text"
+              maxlength="80"
+              value="這一件商品"
+              autocomplete="off"
+            />
+          </div>
+          <div class="selection-bar">
+            <span id="selection-text">勾選兩張，組成一張左右拼圖</span>
+            <div class="selection-actions">
+              <button id="pair-mode" class="mode-button" aria-pressed="true">
+                拼圖</button
+              ><button id="single-crop-mode" class="mode-button" aria-pressed="false">
+                單張裁切</button
+              ><button
+                id="delete-mode"
+                class="mode-button danger"
+                aria-pressed="false"
+              >
+                刪除照片</button
+              ><button id="delete-selected" class="small danger" hidden disabled>
+                刪除已選
+              </button><button id="clear-selection" class="quiet small" disabled>
+                清除勾選
+              </button>
+            </div>
+          </div>
+          <div id="photo-grid" class="photo-grid"></div>
+          <div id="library-empty" class="empty-library">
+            <svg><use href="#i-folder" /></svg>
+            <h3>把這件商品的照片放進來</h3>
+            <p>支援 JPG/JPEG、PNG、WebP、AVIF、BMP、TIFF、靜態 GIF</p>
+          </div>
+          <details id="import-issues" hidden>
+            <summary>匯入時需要注意的照片</summary>
+            <ul></ul>
+          </details>
+          <p class="library-foot">
+            已配對照片會從照片庫隱藏，刪除配對後可再次選取。
+          </p>
+          <section class="ai-panel" aria-labelledby="ai-title">
+            <div class="section-heading">
+              <div>
+                <h3 id="ai-title">AI 批次裁切</h3>
+                <p>偵測完整頭部，只移除上半臉上方的整條橫帶。</p>
+              </div>
+              <span class="ai-model">Qwen3.5 2B · 本機</span>
+            </div>
+            <button id="ai-analyze" class="ai-action" disabled>分析照片</button>
+            <p id="ai-progress" class="ai-progress" aria-live="polite"></p>
+            <div id="ai-results" class="ai-results" hidden></div>
+          </section>
+        </section>
+        <div class="editor-column">
+          <section class="editor" aria-labelledby="editor-title">
+            <div class="section-heading">
+              <div>
+                <h2 id="editor-title">拼圖預覽</h2>
+                <p id="editor-subtitle">先從左側選兩張照片</p>
+              </div>
+              <div class="editor-heading-actions">
+                <button id="single-crop-apply" class="primary" hidden>
+                  套用裁切
+                </button>
+                <button id="add-pair" class="primary" disabled>
+                  <svg><use href="#i-plus" /></svg>加入拼圖
+                </button>
+              </div>
+            </div>
+          <div id="preview-stage" class="preview-stage">
+            <div id="preview-loading" class="preview-loading" hidden aria-live="polite">
+              正在更新預覽…
+            </div>
+            <div id="preview-empty">
+              <svg><use href="#i-pair" /></svg>
+              <p>兩張照片，一張拼圖</p>
+              <span>依勾選順序放在左、右兩側</span>
+            </div>
+            <div id="preview-frame" hidden>
+              <img id="preview" alt="目前左右拼圖的實際輸出預覽" />
+              <div id="preview-crop-box" hidden></div>
+            </div>
+          </div>
+          <div id="single-crop-editor" class="single-crop-editor" hidden></div>
+          <div id="single-crop-actions" class="single-crop-actions" hidden>
+            <button id="single-crop-reset" class="crop-reset">恢復原始範圍</button>
+            <button id="single-crop-cancel">取消</button>
+          </div>
+          <div class="pair-actions">
+            <button id="preview-crop-toggle" class="crop-action" disabled>
+              選擇裁切</button
+            ><button id="preview-crop-reset" class="crop-reset" hidden>
+              取消裁切</button
+            ><button id="swap" disabled>
+              <svg><use href="#i-swap" /></svg>交換左右</button
+            ><button id="remove-pair" class="danger quiet" hidden>
+              解除這組
+            </button>
+          </div>
+          <details id="crop-details">
+            <summary>自由裁切</summary>
+            <div id="crop-editors" class="crop-editors"></div>
+          </details>
+          </section>
+        </div>
+      </div>
+      <section class="pairs" aria-labelledby="pairs-title">
+        <div class="section-heading">
+          <div>
+            <h2 id="pairs-title">已配對 <span id="group-count">0 組</span></h2>
+            <p>未用於拼圖的照片與已完成拼圖會一併匯出</p>
+          </div>
+          <button id="export" class="primary" disabled>
+            <svg><use href="#i-download" /></svg><span>匯出所有圖片</span>
+          </button>
+        </div>
+        <div id="pair-tray" class="pair-tray">
+          <p class="tray-empty">配對完成的照片會放在這裡</p>
+        </div>
+        <div id="export-result" class="export-result" hidden>
+          <div>
+            <strong id="export-title"></strong>
+            <p id="export-path"></p>
+          </div>
+          <button id="open-export">開啟輸出資料夾</button>
+        </div>
+      </section>
+    </main>
+    <footer>原檔不修改 · 照片不傳雲端 · 每次匯出另存新資料夾</footer>
+  </body>
+</html>

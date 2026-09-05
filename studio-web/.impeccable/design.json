@@ -1,0 +1,27 @@
+{
+  "schemaVersion": 2,
+  "title": "Design System: 服飾圖片工作室",
+  "extensions": {
+    "shadows": [
+      {"name": "preview", "value": "0 3px 10px #23304413", "purpose": "Actual collage image only; panels remain flat."}
+    ],
+    "motion": [
+      {"name": "control-state", "value": "background .16s, border-color .16s", "purpose": "Button feedback; disabled for prefers-reduced-motion: reduce."}
+    ],
+    "breakpoints": [
+      {"name": "wide-min", "value": "1500px"},
+      {"name": "compact-max", "value": "1050px"},
+      {"name": "stacked-max", "value": "760px"}
+    ]
+  },
+  "components": [
+    {
+      "name": "Primary action",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "Filled action for adding a pair or exporting saved pairs.",
+      "html": "<button class=\"ds-primary\">加入一組</button>",
+      "css": ".ds-primary{font-family:-apple-system,BlinkMacSystemFont,\"PingFang TC\",\"Noto Sans TC\",sans-serif;font-size:14px;font-weight:550;min-height:38px;padding:8px 13px;border:1px solid var(--accent,#375a96);border-radius:var(--radius,7px);background:var(--accent,#375a96);color:white;cursor:pointer;transition:background .16s,border-color .16s}.ds-primary:hover:not(:disabled){background:#294878}.ds-primary:focus-visible{outline:3px solid #527ebc;outline-offset:3px}.ds-primary:disabled{opacity:.44;cursor:not-allowed}@media(prefers-reduced-motion:reduce){.ds-primary{transition:none}}"
+    }
+  ]
+}
