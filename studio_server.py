@@ -45,11 +45,12 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def allowed(self, write=False):
-        expected = f"127.0.0.1:{self.server.server_port}"
-        if self.headers.get("Host") != expected:
+        host = self.headers.get("Host", "")
+        port = self.server.server_port
+        if host not in (f"127.0.0.1:{port}", f"localhost:{port}"):
             self.send({"error": "只允許從本機工具存取"}, status=403)
             return False
-        if write and (self.headers.get("Origin") not in (None, f"http://{expected}") or not secrets.compare_digest(self.headers.get("X-Pairing-Token", ""), self.server.token)):
+        if write and (self.headers.get("Origin") not in (None, f"http://127.0.0.1:{port}", f"http://localhost:{port}") or not secrets.compare_digest(self.headers.get("X-Pairing-Token", ""), self.server.token)):
             self.send({"error": "連線驗證失效，請重新整理頁面"}, status=403)
             return False
         return True
