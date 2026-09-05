@@ -1,2 +1,2 @@
 Pillow==12.3.0
-llama-cpp-python>=0.3.0
+llama-cpp-python>=0.3.35

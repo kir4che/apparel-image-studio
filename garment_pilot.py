@@ -7,6 +7,7 @@ import hashlib
 import html
 import io
 import json
+import os
 from pathlib import Path
 import re
 import tempfile
@@ -27,8 +28,10 @@ else:
 MODEL = "qwen3.5-2b"
 MODEL_DIR = ROOT / "models"
 MODEL_FILE = MODEL_DIR / "model.gguf"
+PREFERRED_MODEL_FILE = "Qwen3.5-2B-Q4_K_S.gguf"
+PREFERRED_PROJECTOR_FILE = "mmproj-F16.gguf"
 CONFIG_FILE = ROOT / "config.json"
-VERSION = "gate-v8-top-strip-1024-preview"
+VERSION = "gate-v9-multimodal-projector"
 CACHE_MAX_AGE_SECONDS = 30 * 24 * 60 * 60
 CACHE_MAX_BYTES = 100 * 1024 * 1024
 EXTENSIONS = {".jpg", ".jpeg", ".png"}
@@ -67,6 +70,18 @@ _llm = None
 _engine = None
 
 
+def find_model_files():
+    """Return the language model and its required vision projector."""
+    files = sorted(MODEL_DIR.glob("*.gguf"), key=lambda path: path.name.lower())
+    projectors = [path for path in files if path.name.lower().startswith("mmproj")]
+    models = [path for path in files if not path.name.lower().startswith("mmproj")]
+
+    def preferred(paths, name):
+        return next((path for path in paths if path.name.lower() == name.lower()), paths[0] if paths else None)
+
+    return preferred(models, PREFERRED_MODEL_FILE), preferred(projectors, PREFERRED_PROJECTOR_FILE)
+
+
 def load_config():
     if CONFIG_FILE.exists():
         return json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
@@ -100,18 +115,25 @@ def _get_llm():
         return _llm
     try:
         from llama_cpp import Llama
+        from llama_cpp.llama_chat_format import MTMDChatHandler
     except ImportError:
-        raise RuntimeError("請先安裝 llama-cpp-python：pip install llama-cpp-python")
-    gguf_files = list(MODEL_DIR.glob("*.gguf"))
-    if not gguf_files:
-        raise RuntimeError(f"找不到模型檔，請將 .gguf 模型放入 {MODEL_DIR}")
-    model_path = gguf_files[0]
+        raise RuntimeError("內建 AI 元件不完整，請重新下載最新版程式")
+    model_path, projector_path = find_model_files()
+    if model_path is None:
+        raise RuntimeError(f"找不到 {PREFERRED_MODEL_FILE}，請將模型檔放入 {MODEL_DIR}")
+    if projector_path is None:
+        raise RuntimeError(f"找不到視覺投影檔 {PREFERRED_PROJECTOR_FILE}，Windows 內建 AI 必須同時放入模型與視覺投影檔")
+    chat_handler = MTMDChatHandler(
+        clip_model_path=str(projector_path),
+        verbose=False,
+        use_gpu=False,
+    )
     _llm = Llama(
         model_path=str(model_path),
         n_ctx=4096,
-        n_threads=4,
+        n_threads=max(1, min(8, (os.cpu_count() or 4) - 1)),
         verbose=False,
-        chat_format="chatml",
+        chat_handler=chat_handler,
     )
     return _llm
 
@@ -177,24 +199,33 @@ def detect_engine():
         return None, "已選擇 LM Studio 但無法連線"
     if engine == "llamacpp":
         try:
-            from llama_cpp import Llama
-            gguf_files = list(MODEL_DIR.glob("*.gguf"))
-            if gguf_files:
-                return "llamacpp", gguf_files[0].name
-            return None, "已選擇 llama-cpp-python 但找不到模型檔"
+            import llama_cpp
+            from llama_cpp.llama_chat_format import MTMDChatHandler
+            model_path, projector_path = find_model_files()
+            if model_path is None:
+                return None, f"Windows 內建 AI 找不到 {PREFERRED_MODEL_FILE}"
+            if projector_path is None:
+                return None, f"Windows 內建 AI 缺少 {PREFERRED_PROJECTOR_FILE}，請將它與模型放在 models 資料夾"
+            version = getattr(llama_cpp, "__version__", "unknown")
+            return "llamacpp", f"llama-cpp {version} · {model_path.name} + {projector_path.name}"
         except ImportError:
-            return None, "已選擇 llama-cpp-python 但未安裝"
+            return None, "Windows 內建 AI 元件不完整，請重新下載最新版程式"
     ok, detail = check_lm_studio()
     if ok:
         return "lmstudio", detail
     try:
-        from llama_cpp import Llama
-        gguf_files = list(MODEL_DIR.glob("*.gguf"))
-        if gguf_files:
-            return "llamacpp", gguf_files[0].name
+        import llama_cpp
+        from llama_cpp.llama_chat_format import MTMDChatHandler
+        model_path, projector_path = find_model_files()
+        if model_path is not None and projector_path is not None:
+            version = getattr(llama_cpp, "__version__", "unknown")
+            return "llamacpp", f"llama-cpp {version} · {model_path.name} + {projector_path.name}"
     except ImportError:
         pass
-    return None, "找不到可用的 AI 引擎，請安裝 llama-cpp-python 或啟動 LM Studio"
+    model_path, projector_path = find_model_files()
+    if model_path is not None and projector_path is None:
+        return None, f"Windows 內建 AI 缺少 {PREFERRED_PROJECTOR_FILE}，請將它與模型放在 models 資料夾"
+    return None, "找不到可用的 AI 引擎，請啟動 LM Studio，或將模型與視覺投影檔放入 models 資料夾"
 
 
 def digest(path: Path) -> str:
@@ -398,6 +429,7 @@ def analyze(image: Image.Image, source_hash: str, product: str, cache_dir: Path,
                     temperature=0,
                     max_tokens=700,
                     stream=False,
+                    response_format={"type": "json_object", "schema": SCHEMA},
                 )
                 content = response["choices"][0]["message"]["content"].strip()
                 raw = content

@@ -233,11 +233,17 @@ class Handler(BaseHTTPRequestHandler):
                 if len(photos) > 100:
                     raise ValueError("一次最多分析 100 張照片")
                 prune_cache(ROOT / "cache")
+                engine, engine_detail = detect_engine()
+                if engine is None:
+                    write_ai_log(run_id, {
+                        "event": "run_error", "batch_index": batch_index,
+                        "batch_total": batch_total, "error": engine_detail,
+                    })
+                    raise ValueError(engine_detail)
                 results = []
                 for item in photos:
                     image_path = store.folder / f'{item["id"]}.png'
                     image = read_image(image_path, formats=("PNG",))
-                    engine, engine_detail = detect_engine()
                     log_file = write_ai_log(run_id, {
                         "event": "photo_start", "batch_index": batch_index,
                         "batch_total": batch_total, "photo_id": item["id"],

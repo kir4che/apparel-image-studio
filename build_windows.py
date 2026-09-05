@@ -40,9 +40,12 @@ def copy_files():
     else:
         models_dst.mkdir(exist_ok=True)
         (models_dst / "README.txt").write_text(
-            "請將 Qwen3.5-2B 的 .gguf 模型檔放入此資料夾\n"
+            "Windows 內建 AI 必須同時放入以下兩個檔案：\n"
+            "1. Qwen3.5-2B-Q4_K_S.gguf\n"
+            "2. mmproj-F16.gguf（建議使用；其他相容的 mmproj-*.gguf 也可以）\n"
+            "   這是讓模型能讀取照片的視覺投影檔。\n\n"
             "下載位置：https://huggingface.co/unsloth/Qwen3.5-2B-GGUF\n"
-            "建議使用 Q4_K_S 量化版本",
+            "缺少視覺投影檔時，AI 裁切不會啟動。",
             encoding="utf-8"
         )
 
@@ -55,11 +58,12 @@ def copy_files():
     readme.write_text(
         "服飾圖片工作室 - Windows 可攜版\n"
         "================================\n\n"
-        "1. 將 Qwen3.5-2B 的 .gguf 模型檔放入 models 資料夾\n"
-        "2. 雙擊「服飾圖片工作室.exe」\n"
-        "3. 瀏覽器會自動開啟操作介面\n"
-        "4. 照片請放入「使用者照片」資料夾\n"
-        "5. 匯出的圖片會在「outputs」資料夾\n\n"
+        "1. 將 Qwen3.5-2B-Q4_K_S.gguf 放入 models 資料夾\n"
+        "2. 將 mmproj-F16.gguf 放入同一個 models 資料夾（其他相容的 mmproj-*.gguf 也可以）\n"
+        "3. 雙擊「服飾圖片工作室.exe」\n"
+        "4. 瀏覽器會自動開啟操作介面\n"
+        "5. 照片請放入「使用者照片」資料夾\n"
+        "6. 匯出的圖片會在「outputs」資料夾\n\n"
         "注意：首次啟動可能需要較長時間載入模型\n",
         encoding="utf-8"
     )

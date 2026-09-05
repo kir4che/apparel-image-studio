@@ -1505,10 +1505,13 @@ $("#ai-analyze").onclick = async () => {
   try {
     const health = await api("/api/ai-health");
     if (!health.ok) {
-      message(health.detail || "AI 服務不可用，請先啟動 LM Studio 並載入模型", true);
+      const detail = health.detail || "AI 服務不可用，請先啟動 LM Studio 並載入模型";
+      $("#ai-progress").textContent = `無法開始分析：${detail}`;
+      message(detail, true);
       return;
     }
   } catch (error) {
+    $("#ai-progress").textContent = `無法開始分析：${error.message}`;
     message("無法連線到 AI 服務：" + error.message, true);
     return;
   }
@@ -1560,8 +1563,10 @@ $("#ai-analyze").onclick = async () => {
     $("#ai-progress").title = aiLogFile ? `診斷紀錄：${aiLogFile}` : "";
     message("");
   } catch (error) {
-    if (error.name !== "AbortError" && runToken === aiRunToken)
+    if (error.name !== "AbortError" && runToken === aiRunToken) {
+      $("#ai-progress").textContent = `分析未完成：${error.message}`;
       message(error.message, true);
+    }
   } finally {
     if (runToken === aiRunToken) {
       aiBusy = false;

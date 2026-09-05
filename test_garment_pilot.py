@@ -5,7 +5,7 @@ from pathlib import Path
 import tempfile
 import sys
 import unittest
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from PIL import Image, ImageDraw
 
@@ -22,6 +22,60 @@ def answer(data=GOOD):
 
 
 class PilotTests(unittest.TestCase):
+    def tearDown(self):
+        pilot._llm = None
+        pilot._engine = None
+
+    def test_windows_model_requires_matching_vision_projector(self):
+        with tempfile.TemporaryDirectory() as d:
+            model_dir = Path(d)
+            model = model_dir / pilot.PREFERRED_MODEL_FILE
+            model.write_bytes(b"model")
+            with patch.object(pilot, "MODEL_DIR", model_dir), patch.object(pilot, "get_engine", return_value="llamacpp"):
+                engine, detail = pilot.detect_engine()
+                self.assertIsNone(engine)
+                self.assertIn(pilot.PREFERRED_PROJECTOR_FILE, detail)
+                projector = model_dir / pilot.PREFERRED_PROJECTOR_FILE
+                projector.write_bytes(b"projector")
+                engine, detail = pilot.detect_engine()
+                self.assertEqual(engine, "llamacpp")
+                self.assertIn(model.name, detail)
+                self.assertIn(projector.name, detail)
+
+    def test_builtin_llm_loads_vision_projector(self):
+        with tempfile.TemporaryDirectory() as d:
+            model_dir = Path(d)
+            model = model_dir / pilot.PREFERRED_MODEL_FILE
+            projector = model_dir / pilot.PREFERRED_PROJECTOR_FILE
+            model.write_bytes(b"model")
+            projector.write_bytes(b"projector")
+            fake_llama = MagicMock()
+            fake_handler = MagicMock()
+            with patch.object(pilot, "MODEL_DIR", model_dir), \
+                    patch("llama_cpp.Llama", return_value=fake_llama) as llama, \
+                    patch("llama_cpp.llama_chat_format.MTMDChatHandler", return_value=fake_handler) as handler:
+                self.assertIs(pilot._get_llm(), fake_llama)
+            handler.assert_called_once_with(clip_model_path=str(projector), verbose=False, use_gpu=False)
+            kwargs = llama.call_args.kwargs
+            self.assertEqual(kwargs["model_path"], str(model))
+            self.assertIs(kwargs["chat_handler"], fake_handler)
+            self.assertNotIn("chat_format", kwargs)
+
+    def test_builtin_analysis_sends_image_and_forces_json_schema(self):
+        with tempfile.TemporaryDirectory() as d:
+            llm = MagicMock()
+            llm.create_chat_completion.return_value = {
+                "choices": [{"message": {"content": json.dumps(GOOD)}}]
+            }
+            with patch.object(pilot, "detect_engine", return_value=("llamacpp", "model + projector")), \
+                    patch.object(pilot, "_get_llm", return_value=llm):
+                result = pilot.analyze(Image.new("RGB", (60, 100)), "hash", "裙子", Path(d), "model")
+            self.assertIsNotNone(result["analysis"])
+            kwargs = llm.create_chat_completion.call_args.kwargs
+            self.assertEqual(kwargs["response_format"], {"type": "json_object", "schema": pilot.SCHEMA})
+            content = kwargs["messages"][1]["content"]
+            self.assertTrue(any(part.get("type") == "image_url" for part in content))
+
     def test_prune_cache_removes_expired_and_oldest_entries(self):
         with tempfile.TemporaryDirectory() as d:
             cache = Path(d)
