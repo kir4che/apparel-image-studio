@@ -66,7 +66,7 @@ The contact sheet defaults to four columns, (14px) row gaps, (10px) column gaps 
 - At (760px) and below: work areas stack, panel padding becomes (14px), the contact sheet returns to four columns with a (440px) height cap, used-photo badges are hidden, and export results wrap
 - Both crop editors remain side by side; their gap changes from (14px) to (12px) on mobile
 
-The preview centers a contained image without forcing its aspect ratio. Image height is capped at (430px) on desktop and (460px) on mobile. Square output explicitly shows padding; natural-ratio output does not add canvas padding.
+The preview centers a contained image without forcing its aspect ratio. Image height is capped at (430px) on desktop and (460px) on mobile. The current output keeps the natural source dimensions and does not add ratio padding.
 
 ## Elevation & Depth
 
@@ -80,11 +80,11 @@ Controls and panels use the frontmatter radii. Inputs and selects use (5px), pho
 
 - **Buttons:** bordered white defaults, filled blue primary actions, transparent quiet actions and red destructive text. Ordinary controls are at least (38px) tall; small variants and mobile header actions are (30px). Background and border transitions take (0.16s); reduced-motion preferences disable transitions. Disabled controls use opacity (0.44)
 - **Focus:** a (3px) blue outline with (3px) offset marks keyboard focus. Photo and saved-pair buttons retain focus by item identity when lists rebuild. This record is not a full accessibility or contrast certification
-- **Photo modes:** the library defaults to `拼圖`; `單張裁切` opens one selected photo in the right editor and `刪除照片` is an explicit destructive mode. First and second studio selections are marked 左 and 右. A third choice prompts saving or deselection. Selected photos use `aria-pressed`; already-used photos remain available for other pairs. Swap changes sides; adding saves the pair; selecting a tray card opens it for editing and removal
-- **Preview and tray:** the large preview shows actual output. The preview has a separate `選擇裁切` mode; handles appear only after activation, and `完成裁切` applies the selected output frame. Tray thumbnails identify the original photos, not their final crop or padding
-- **Pair deletion:** each tray item has an always-visible (32px) circular SVG close button in its upper-right corner, separate from the edit button. It removes only that pair without confirmation, preserves other drafts and exports, and moves keyboard focus to a neighboring close button (or the photo picker when empty). Hover uses the existing crop-red token
-- **Crop editor:** each side or a single selected photo has a source image, four draggable edge handles and four draggable corner handles with a pixel readout and a visible reset button. Single-photo apply updates the photo thumbnail and all uses of that photo; cancel discards the draft. Arrow keys move one source pixel, Shift moves ten, and Home/End move an edge to its allowed bound. It starts at the full source-photo bounds and never reads model crop suggestions
-- **Fields and status:** native text and select controls label product name and output format. Import warnings expand separately. A polite live status region reports work and errors. Export is unavailable without saved pairs and reveals its local result after completion
+- **Photo modes:** the library defaults to `拼圖`; `單張裁切` opens one selected photo in the right editor and `刪除照片` is an explicit destructive mode. First and second studio selections are marked 左 and 右. A third choice prompts saving or deselection. Selected photos use `aria-pressed`; already-used photos are hidden from the available pairing list. Swap changes sides; adding saves the pair; selecting a tray card opens it for editing and removal
+- **Preview and tray:** the large preview shows actual output. The preview has a separate `選擇裁切` mode; handles appear only after activation, and `完成裁切` applies the selected output frame. Tray thumbnails identify the current crop state of the photos
+- **Pair deletion:** each tray item has a small circular SVG close button in its upper-right corner, separate from the edit button. It asks for confirmation, removes only that pair, preserves other drafts and exports, and moves keyboard focus to a neighboring close button (or the photo picker when empty). Hover uses the existing crop-red token
+- **Crop editor:** each side or a single selected photo has a source image, four draggable edge handles and four draggable corner handles with a pixel readout and a visible reset button. Single-photo changes auto-save after a short idle delay and update the photo thumbnail and all uses of that photo; cancelling only leaves the current saved crop in place. Arrow keys move one source pixel, Shift moves ten, and Home/End move an edge to its allowed bound. It starts at the full source-photo bounds. AI batch suggestions are shown separately and must be explicitly applied
+- **Fields and status:** native text controls label product name. Import warnings expand separately. A polite live status region reports work and errors. Export remains available for the current saved photos and pairs while AI analysis runs; suggestions not yet applied are not included
 
 ## Do's and Don'ts
 
@@ -92,6 +92,6 @@ Controls and panels use the frontmatter radii. Inputs and selects use (5px), pho
 - **Do** keep selected photos, the active saved pair and keyboard focus identifiable
 - **Do** use the actual large preview as the authority for the exported result
 - **Do** preserve raster provenance from the user's 原圖 files and SHA-keyed local imports
-- **Don't** read or apply an AI crop suggestion; the crop rectangle is the user's choice
+- **Don't** silently apply an AI crop suggestion; the crop rectangle is the user's choice
 - **Don't** treat source thumbnails as proof of final crop or padding
 - **Don't** add decorative motion, remote imagery or unsubstantiated brand claims

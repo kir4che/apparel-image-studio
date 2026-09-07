@@ -19,11 +19,13 @@ let state,
   singleCropPhotoId = null,
   singleCropDraft = null,
   singleCropBeforeEdit = null,
+  singleCropApplyTimer = null,
   previewCropMode = false,
   previewBaseSize = null,
   previewCropBeforeEdit = null;
 let previewTimer,
   previewSerial = 0,
+  cropVersionSerial = 0,
   previewController = null,
   saveChain = Promise.resolve(),
   saveTimer = null,
@@ -55,6 +57,14 @@ function invalidatePairPreview(groupId) {
   const request = pairPreviewRequests.get(groupId);
   request?.controller.abort();
   pairPreviewRequests.delete(groupId);
+}
+function markPhotoPreviewChanged(id) {
+  cropVersions.set(id, `${Date.now()}-${++cropVersionSerial}`);
+  const affectedGroups = state.groups.filter((group) =>
+    [group.left.photo, group.right.photo].includes(id),
+  );
+  affectedGroups.forEach((group) => invalidatePairPreview(group.id));
+  return affectedGroups;
 }
 function requestPairPreview(group) {
   if (!group || !state) return;
@@ -203,8 +213,8 @@ function updateActions() {
   for (const id of ["folder-button", "files-button", "reset"])
     $(`#${id}`).disabled = busy || aiBusy;
   const single = photoMode === "crop";
-  $("#pair-mode").disabled = busy || aiBusy;
-  $("#single-crop-mode").disabled = busy || aiBusy || !state.photos.length;
+  $("#pair-mode").disabled = busy;
+  $("#single-crop-mode").disabled = busy || !state.photos.length;
   $("#pair-mode").setAttribute("aria-pressed", String(photoMode === "pair"));
   $("#single-crop-mode").setAttribute("aria-pressed", String(single));
   $("#swap").hidden = single;
@@ -214,7 +224,7 @@ function updateActions() {
   $("#remove-pair").hidden = single || !active;
   $("#remove-pair").disabled = busy;
   $("#clear-selection").disabled = !selected.length || busy;
-  $("#delete-mode").disabled = busy || aiBusy || !state.photos.length;
+  $("#delete-mode").disabled = busy || !state.photos.length;
   $("#delete-mode").textContent = deleteMode ? "完成刪除" : "刪除照片";
   $("#delete-mode").setAttribute("aria-pressed", String(deleteMode));
   $("#delete-selected").hidden = !deleteMode;
@@ -234,8 +244,6 @@ function updateActions() {
   $("#single-crop-actions").hidden = !single || !singleCropPhotoId;
   $("#single-crop-reset").disabled = busy || !singleCropDraft;
   $("#single-crop-cancel").disabled = busy;
-  $("#single-crop-apply").hidden = !single || !singleCropPhotoId;
-  $("#single-crop-apply").disabled = busy || !singleCropDraft;
 }
 function renderLibrary() {
   const grid = $("#photo-grid");
@@ -387,7 +395,7 @@ function toggleDeleteSelection(id) {
   updateSelectionUI();
 }
 async function deleteSelectedPhotos() {
-  if (busy || aiBusy || !deleteMode || !selected.length) return;
+  if (busy || !deleteMode || !selected.length) return;
   const ids = [...selected];
   if (
     !confirm(
@@ -410,7 +418,7 @@ async function deleteSelectedPhotos() {
   }
 }
 async function deletePhoto(id) {
-  if (busy || aiBusy) return;
+  if (busy) return;
   const target = photo(id);
   if (!target) return;
   if (
@@ -453,7 +461,7 @@ async function deletePhoto(id) {
 }
 function renderAiResults() {
   const container = $("#ai-results");
-  aiResults = aiResults.filter((x) => photo(x.id));
+  aiResults = aiResults.filter((x) => photo(x.id) && !state.photo_crops?.[x.id]);
   const proposed = aiResults.filter((x) => x.analysis && x.crop_box[1] > 0);
   const failed = aiResults.filter((x) => !x.analysis);
   if (!proposed.length && !failed.length) {
@@ -566,11 +574,10 @@ async function applyAiCrops() {
   }
   for (const result of aiResults)
     if (appliedIds.has(result.id)) result.applied = true;
+  const affectedGroups = new Map();
   for (const id of appliedIds) {
-    cropVersions.set(id, Date.now());
-    for (const group of state.groups)
-      if ([group.left.photo, group.right.photo].includes(id))
-        invalidatePairPreview(group.id);
+    for (const group of markPhotoPreviewChanged(id))
+      affectedGroups.set(group.id, group);
   }
   for (const group of state.groups)
     for (const sideKey of ["left", "right"]) {
@@ -589,20 +596,18 @@ async function applyAiCrops() {
         s.box = [p.white[0], top, p.white[1], p.height];
     }
   invalidateExport();
-  renderLibrary();
-  renderTray();
-  renderEditor();
-  for (const group of state.groups)
-    if ([group.left.photo, group.right.photo].some((id) => appliedIds.has(id)))
-      requestPairPreview(group);
   try {
     await persist();
   } catch (error) {
     message("裁切已更新但保存失敗：" + error.message, true);
     return;
   }
+  renderLibrary();
+  renderTray();
+  renderEditor();
+  affectedGroups.forEach(requestPairPreview);
   message(
-    `已套用 ${selectedIds.size} 張 AI 裁切建議，之後新增的組圖也會沿用，可再手動微調`,
+    `已套用 ${appliedIds.size} 張 AI 裁切建議，之後新增的組圖也會沿用，可再手動微調`,
   );
 }
 function cancelAiAnalysis(showStatus = true) {
@@ -714,6 +719,7 @@ function removePair(id) {
   if (busy) return;
   const index = state.groups.findIndex((g) => g.id === id);
   if (index < 0) return;
+  if (!confirm(`確定刪除第 ${index + 1} 組拼圖？原照片與已匯出的檔案不受影響。`)) return;
   const focusInTray = $("#pair-tray").contains(document.activeElement);
   state.groups.splice(index, 1);
   invalidatePairPreview(id);
@@ -745,9 +751,11 @@ function singleCropDirty() {
   if (!singleCropDraft || !singleCropBeforeEdit) return false;
   return JSON.stringify(singleCropDraft.box) !== JSON.stringify(singleCropBeforeEdit);
 }
-function selectSingleCrop(id) {
+async function selectSingleCrop(id) {
   if (busy || photoMode !== "crop") return;
-  if (singleCropDirty() && !confirm("目前裁切尚未套用，要捨棄這次調整嗎？")) return;
+  if (singleCropDirty() || singleCropApplyTimer) {
+    if (!(await flushSingleCropApply())) return;
+  }
   singleCropPhotoId = id;
   singleCropBeforeEdit = photoBaseBox(id);
   singleCropDraft = { photo: id, box: [...singleCropBeforeEdit] };
@@ -760,6 +768,8 @@ function selectSingleCrop(id) {
   renderEditor();
 }
 function clearSingleCrop() {
+  clearTimeout(singleCropApplyTimer);
+  singleCropApplyTimer = null;
   singleCropPhotoId = null;
   singleCropDraft = null;
   singleCropBeforeEdit = null;
@@ -774,7 +784,6 @@ async function applySingleCrop() {
   state.photo_crops = state.photo_crops || {};
   if (isOriginal) delete state.photo_crops[id];
   else state.photo_crops[id] = box;
-  cropVersions.set(id, Date.now());
   delete (state.ai_crops || {})[id];
   for (const group of state.groups)
     for (const key of ["left", "right"])
@@ -783,25 +792,36 @@ async function applySingleCrop() {
     for (const key of ["left", "right"])
       if (draft[key].photo === id) draft[key].box = [...box];
   invalidateExport();
-  singleCropBeforeEdit = [...box];
-  renderLibrary();
-  const affectedGroups = state.groups.filter((group) =>
-    [group.left.photo, group.right.photo].includes(id),
-  );
-  affectedGroups.forEach((group) => invalidatePairPreview(group.id));
-  renderTray();
-  renderEditor();
+  const affectedGroups = markPhotoPreviewChanged(id);
   try {
     await persist();
   } catch (error) {
     message("裁切已更新但保存失敗：" + error.message, true);
-    return;
+    return false;
   }
+  singleCropBeforeEdit = [...box];
+  renderLibrary();
+  renderTray();
+  renderEditor();
   affectedGroups.forEach(requestPairPreview);
-  message(`已套用裁切${state.groups.filter((g) => [g.left.photo, g.right.photo].includes(id)).length ? "，相關拼圖也已更新" : ""}`);
+  return true;
+}
+function queueSingleCropApply() {
+  clearTimeout(singleCropApplyTimer);
+  singleCropApplyTimer = setTimeout(() => {
+    singleCropApplyTimer = null;
+    applySingleCrop();
+  }, 320);
+}
+async function flushSingleCropApply() {
+  clearTimeout(singleCropApplyTimer);
+  singleCropApplyTimer = null;
+  if (!singleCropDirty()) return true;
+  return (await applySingleCrop()) !== false;
 }
 function cancelSingleCrop() {
-  if (singleCropDirty() && !confirm("目前裁切尚未套用，要捨棄這次調整嗎？")) return;
+  clearTimeout(singleCropApplyTimer);
+  singleCropApplyTimer = null;
   clearSingleCrop();
   renderLibrary();
   renderEditor();
@@ -810,6 +830,7 @@ function resetSingleCrop() {
   if (!singleCropDraft || !singleCropPhotoId) return;
   singleCropDraft.box = [0, 0, photo(singleCropPhotoId).width, photo(singleCropPhotoId).height];
   renderEditor();
+  queueSingleCropApply();
 }
 function renderEditor() {
   const singleMode = photoMode === "crop";
@@ -924,6 +945,7 @@ function cropEditor(s, key, options = {}) {
     if (single) scheduleSinglePreview();
     else schedulePreview();
     if (active && !single) persist();
+    if (single) queueSingleCropApply();
   }
   function move(name, x, y) {
     const next = [...s.box];
@@ -1350,8 +1372,13 @@ $("#files-button").onclick = () => $("#files-input").click();
 $("#folder-input").onchange = (event) => importFiles(event.target.files);
 $("#files-input").onchange = (event) => importFiles(event.target.files);
 function setPhotoMode(mode) {
-  if (busy || aiBusy || (mode === "crop" && !state.photos.length)) return;
-  if (photoMode === "crop" && singleCropDirty() && !confirm("目前裁切尚未套用，要捨棄這次調整嗎？")) return;
+  if (busy || (mode === "crop" && !state.photos.length)) return;
+  if (photoMode === "crop" && (singleCropDirty() || singleCropApplyTimer)) {
+    flushSingleCropApply().then((saved) => {
+      if (saved) setPhotoMode(mode);
+    });
+    return;
+  }
   photoMode = mode;
   deleteMode = mode === "delete";
   clearSingleCrop();
@@ -1372,7 +1399,6 @@ $("#delete-mode").onclick = () => {
 };
 $("#single-crop-reset").onclick = resetSingleCrop;
 $("#single-crop-cancel").onclick = cancelSingleCrop;
-$("#single-crop-apply").onclick = applySingleCrop;
 $("#delete-selected").onclick = deleteSelectedPhotos;
 $("#clear-selection").onclick = () => {
   selected = [];
@@ -1545,7 +1571,12 @@ $("#ai-analyze").onclick = async () => {
       );
       if (runToken !== aiRunToken || result.cancelled) return;
       if (result.log_file) aiLogFile = result.log_file;
-      const item = result.results[0];
+      const item = result.results?.find((candidate) => candidate.id === photos[index].id);
+      if (!item) {
+        renderAiResults();
+        updateActions();
+        continue;
+      }
       item.apply = !!item.analysis && item.crop_box[1] > 0;
       aiResults.push(item);
       renderAiResults();
@@ -1579,10 +1610,15 @@ $("#ai-analyze").onclick = async () => {
 $("#export").onclick = async () => {
   if (!state.photos.length) return;
   const restoreExportFocus = document.activeElement === $("#export");
+  const hasPendingAiAnalysis = aiBusy;
   setBusy(true);
   exporting = true;
   $("#export span").textContent = "正在匯出…";
-  message("正在從原尺寸照片產生照片與拼圖，原檔不會被覆寫");
+  message(
+    hasPendingAiAnalysis
+      ? "正在匯出目前已保存的裁切；AI 分析尚未完成的建議不會包含在這次匯出"
+      : "正在從原尺寸照片產生照片與拼圖，原檔不會被覆寫",
+  );
   try {
     await persist();
     const result = await api("/api/export", {});

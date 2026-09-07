@@ -18,7 +18,21 @@ import time
 from collections import OrderedDict
 from PIL import Image
 
-from garment_pilot import MODEL, ROOT, analyze, detect_engine, digest, get_engine, prune_cache, read_image, set_engine, top_only_crop_box
+from garment_pilot import (
+    ANALYSIS_PREVIEW_EDGE,
+    MODEL,
+    ROOT,
+    analyze,
+    analysis_dimensions,
+    detect_engine,
+    digest,
+    find_model_files,
+    get_engine,
+    prune_cache,
+    read_image,
+    set_engine,
+    top_only_crop_box,
+)
 from studio_core import StudioStore
 
 if getattr(sys, 'frozen', False):
@@ -67,6 +81,24 @@ def write_ai_log(run_id, event, log_dir=None):
         print(f"AI 診斷紀錄寫入失敗：{exc}", flush=True)
         return None
     return str(path)
+
+
+def ai_model_identity(engine, detail):
+    """Describe the active model without hashing large model files per request."""
+    identity = {"model": MODEL, "engine": engine, "engine_detail": detail}
+    if engine == "llamacpp":
+        files = []
+        for path in find_model_files():
+            if path is None:
+                files.append(None)
+                continue
+            try:
+                stat = path.stat()
+                files.append({"name": path.name, "size": stat.st_size, "mtime_ns": stat.st_mtime_ns})
+            except OSError:
+                files.append({"name": path.name, "missing": True})
+        identity["files"] = files
+    return json.dumps(identity, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -229,7 +261,17 @@ class Handler(BaseHTTPRequestHandler):
                 if run_id in getattr(self.server, "ai_cancelled", set()):
                     self.send({"cancelled": True, "run_id": run_id, "results": []})
                     return
-                photos = store.state["photos"] if ids is None else [store.photo(x) for x in ids]
+                with store._lock:
+                    requested_ids = [item["id"] for item in store.state["photos"]] if ids is None else list(ids)
+                    product = store.state.get("product", "商品")
+                photos = []
+                for photo_id in requested_ids:
+                    with store._lock:
+                        try:
+                            photos.append(dict(store.photo(photo_id)))
+                        except ValueError:
+                            # A photo may be deleted while a background AI run is still draining.
+                            continue
                 if len(photos) > 100:
                     raise ValueError("一次最多分析 100 張照片")
                 prune_cache(ROOT / "cache")
@@ -240,22 +282,31 @@ class Handler(BaseHTTPRequestHandler):
                         "batch_total": batch_total, "error": engine_detail,
                     })
                     raise ValueError(engine_detail)
+                model_identity = ai_model_identity(engine, engine_detail)
                 results = []
                 for item in photos:
-                    image_path = store.folder / f'{item["id"]}.png'
-                    image = read_image(image_path, formats=("PNG",))
+                    with store._lock:
+                        try:
+                            item = store.photo(item["id"])
+                            image_path = store.folder / f'{item["id"]}.png'
+                            image = read_image(image_path, formats=("PNG",))
+                        except (OSError, ValueError):
+                            continue
                     log_file = write_ai_log(run_id, {
                         "event": "photo_start", "batch_index": batch_index,
                         "batch_total": batch_total, "photo_id": item["id"],
-                        "photo_name": item["name"], "image_size": list(image.size),
+                        "photo_name": item["name"], "source_size": list(image.size),
+                        "analysis_size": analysis_dimensions(image.size),
+                        "analysis_preview_edge": ANALYSIS_PREVIEW_EDGE,
                         "engine": engine, "engine_detail": engine_detail,
+                        "model_identity": model_identity,
                     })
                     ai_lock = getattr(self.server, "ai_lock", None)
                     if ai_lock:
                         with ai_lock:
-                            result = analyze(image, item["id"], store.state.get("product", "商品"), ROOT / "cache", self.server.model_identity)
+                            result = analyze(image, item["id"], product, ROOT / "cache", model_identity)
                     else:
-                        result = analyze(image, item["id"], store.state.get("product", "商品"), ROOT / "cache", self.server.model_identity if hasattr(self.server, "model_identity") else MODEL)
+                        result = analyze(image, item["id"], product, ROOT / "cache", model_identity)
                     if run_id in getattr(self.server, "ai_cancelled", set()):
                         self.send({"cancelled": True, "run_id": run_id, "results": []})
                         return
@@ -281,6 +332,9 @@ class Handler(BaseHTTPRequestHandler):
                         "event": "photo_finish", "batch_index": batch_index,
                         "batch_total": batch_total, "photo_id": item["id"],
                         "photo_name": item["name"], "outcome": outcome,
+                        "source_size": list(image.size),
+                        "analysis_size": analysis_dimensions(image.size),
+                        "model_identity": model_identity,
                         "crop_top": crop_box[1], "issues": issues,
                         "cache_hit": result.get("cache_hit", False),
                         "seconds": result.get("seconds_this_run", 0),
@@ -295,7 +349,7 @@ class Handler(BaseHTTPRequestHandler):
                         "event": "run_complete", "batch_total": batch_total,
                     }) or log_file
                 self.send({"results": results, "model": MODEL, "run_id": run_id,
-                           "log_file": log_file})
+                           "log_file": log_file, "model_identity": model_identity})
             elif route.path == "/api/export":
                 result = store.export()
                 self.server.exports.add(result["batch"])
@@ -356,7 +410,6 @@ def main():
     server.exports = set()
     server.ai_lock = threading.Lock()
     server.ai_cancelled = OrderedDict()
-    server.model_identity = f"{MODEL}:builtin"
     server.timeout = 30
     url = f"http://127.0.0.1:{server.server_port}"
     print(f"服飾圖片工作室：{url}\n輸出位置：{server.store.output}\n關閉這個執行視窗可停止工具", flush=True)
