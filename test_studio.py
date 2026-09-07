@@ -7,11 +7,12 @@ from pathlib import Path
 import tempfile
 import threading
 import unittest
+import unittest.mock
 
 from PIL import Image, ImageDraw
 
 from studio_core import StudioStore, render_pair
-from studio_server import Handler, write_ai_log
+from studio_server import Handler, ai_model_identity, write_ai_log
 
 
 def picture(color, size=(180, 300), white=False):
@@ -56,6 +57,18 @@ class StudioTests(unittest.TestCase):
         self.assertNotIn("windows-test", Path(log_file).name)
         self.assertNotIn("data:image", Path(log_file).read_text(encoding="utf-8"))
 
+    def test_ai_model_identity_changes_when_builtin_model_file_changes(self):
+        model = self.root / "model.gguf"
+        projector = self.root / "mmproj-F16.gguf"
+        model.write_bytes(b"model-v1")
+        projector.write_bytes(b"projector-v1")
+        with unittest.mock.patch("studio_server.find_model_files", return_value=(model, projector)):
+            first = json.loads(ai_model_identity("llamacpp", "llama-cpp test"))
+            model.write_bytes(b"model-v2-with-different-size")
+            second = json.loads(ai_model_identity("llamacpp", "llama-cpp test"))
+        self.assertNotEqual(first["files"], second["files"])
+        self.assertEqual(first["engine"], "llamacpp")
+
     def test_reset_can_clean_working_photo_copies(self):
         self.assertTrue((self.store.folder / f'{self.a["id"]}.png').is_file())
         self.assertTrue((self.store.folder / f'{self.a["id"]}-thumb.jpg').is_file())
@@ -64,6 +77,28 @@ class StudioTests(unittest.TestCase):
         self.assertFalse((self.store.folder / f'{self.a["id"]}.png').exists())
         self.assertFalse((self.store.folder / f'{self.a["id"]}-thumb.jpg').exists())
         self.assertEqual(self.store.state["photos"], [])
+
+    def test_corrupt_saved_state_does_not_block_restart(self):
+        self.store.state_file.write_text("{broken", encoding="utf-8")
+        restored = StudioStore(self.store.folder, self.store.output)
+        self.assertEqual(restored.state["photos"], [])
+        self.assertTrue(list(self.store.folder.glob("state-broken-*.json")))
+        self.assertTrue(self.store.state_file.is_file())
+
+    def test_legacy_square_format_is_migrated_to_natural(self):
+        self.store.update({"product": "舊工作", "groups": [], "format": "square"})
+        restored = StudioStore(self.store.folder, self.store.output)
+        self.assertEqual(restored.state["format"], "natural")
+
+    def test_missing_working_photo_is_removed_on_restart(self):
+        self.store.update({"product": "test", "groups": [self.group], "format": "natural",
+                           "ai_crops": {self.a["id"]: 50}, "photo_crops": {self.a["id"]: [0, 0, 100, 100]}})
+        (self.store.folder / f'{self.a["id"]}.png').unlink()
+        restored = StudioStore(self.store.folder, self.store.output)
+        self.assertNotIn(self.a["id"], [photo["id"] for photo in restored.state["photos"]])
+        self.assertEqual(restored.state["groups"], [])
+        self.assertNotIn(self.a["id"], restored.state["ai_crops"])
+        self.assertEqual(restored.state["photo_crops"], {})
 
     def test_delete_unpaired_photo_removes_working_files_and_preserves_pairs(self):
         self.store.state["ai_crops"] = {self.a["id"]: 40}
@@ -151,7 +186,8 @@ class StudioTests(unittest.TestCase):
         self.assertNotEqual(first["folder"], recreated["folder"])
         self.assertFalse(recreated["reused"])
         restored = StudioStore(self.store.folder, self.store.output)
-        self.assertEqual(restored.export()["folder"], recreated["folder"])
+        # The removed output-ratio control migrates legacy square state to natural.
+        self.assertNotEqual(restored.export()["folder"], recreated["folder"])
         changed = copy.deepcopy(self.group)
         changed["left"]["top"] = 51
         restored.update({"product": "中文裙子", "groups": [changed], "format": "square"})

@@ -332,7 +332,7 @@ class PilotTests(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             pilot.RejectRedirect().redirect_request(None, None, 302, "", {}, "https://example.com")
 
-    def test_analyze_uses_1024_preview_not_640(self):
+    def test_analyze_uses_platform_analysis_preview_limit(self):
         with tempfile.TemporaryDirectory() as d:
             captured = {}
             def request(payload):
@@ -345,7 +345,7 @@ class PilotTests(unittest.TestCase):
                 return answer()
             pilot.analyze(Image.new("RGB", (4000, 3000)), "hash", "dress", Path(d), "model", request)
             w, h = captured["preview_size"]
-            self.assertLessEqual(max(w, h), 1024)
+            self.assertLessEqual(max(w, h), pilot.ANALYSIS_PREVIEW_EDGE)
 
     def test_cache_includes_model_identity(self):
         with tempfile.TemporaryDirectory() as d:

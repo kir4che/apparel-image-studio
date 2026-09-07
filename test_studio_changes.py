@@ -3,6 +3,7 @@ from http.server import HTTPServer
 import os
 from pathlib import Path
 import secrets
+import shutil
 import subprocess
 import tempfile
 import threading
@@ -12,13 +13,14 @@ from garment_pilot import ROOT
 from studio_core import StudioStore
 from studio_server import Handler
 
-SAMPLE = Path("/Users/moinmoin/Downloads/原圖")
-
-
 def main():
     run = Path(tempfile.mkdtemp(prefix="studio-changes-", dir=ROOT))
+    sample = run / "sample"
+    sample.mkdir()
+    for index, color in enumerate(((210, 80, 80), (80, 120, 210), (80, 180, 120), (210, 150, 70)), 1):
+        Image.new("RGB", (180 + index * 10, 260 + index * 10), color).save(sample / f"下載 ({index}).jpeg", "JPEG")
     store = StudioStore(run / "data", run / "exports")
-    photos = [store.import_photo(f"下載 ({i}).jpeg", (SAMPLE / f"下載 ({i}).jpeg").read_bytes())["photo"] for i in (1, 2, 3, 4)]
+    photos = [store.import_photo(f"下載 ({i}).jpeg", (sample / f"下載 ({i}).jpeg").read_bytes())["photo"] for i in (1, 2, 3, 4)]
     def side(i):
         return {"photo": photos[i]["id"], "top": 0, "cut": False}
     store.update({"product": "刪除配對測試", "format": "natural", "groups": [{"id": "first", "left": side(0), "right": side(1)}, {"id": "second", "left": side(2), "right": side(3)}]})
@@ -34,7 +36,8 @@ def main():
     thread.start()
     env = {**os.environ, "PAIR_TEST_URL": f"http://127.0.0.1:{server.server_port}", "PAIR_TEST_RUN": str(run)}
     try:
-        subprocess.run(["/Users/moinmoin/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node", str(ROOT / "test_studio_changes.cjs")], env=env, check=True)
+        node = shutil.which("node") or "/Users/moinmoin/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node"
+        subprocess.run([node, str(ROOT / "test_studio_changes.cjs")], env=env, check=True)
         print(f"BROWSER_CHECKS: {run}")
     finally:
         server.shutdown()

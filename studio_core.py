@@ -24,6 +24,10 @@ EXPORT_VERSION = "jpeg95-v2-source-hash"
 PREVIEW_MAX_EDGE = 1600
 
 
+def default_state():
+    return {"product": "這一件商品", "photos": [], "groups": [], "format": "natural", "ai_crops": {}, "photo_crops": {}}
+
+
 def render_pair(images, mode="square"):
     if mode not in FORMATS or len(images) != 2:
         raise ValueError("請選兩張照片與有效的輸出比例")
@@ -76,16 +80,109 @@ class StudioStore:
         self._lock = threading.RLock()
         self.state_file = self.folder / "state.json"
         self.last_export_file = self.folder / "last-export.json"
-        self.state = {"product": "這一件商品", "photos": [], "groups": [], "format": "natural", "ai_crops": {}, "photo_crops": {}}
+        self.state = default_state()
         if self.state_file.exists():
-            self.state = json.loads(self.state_file.read_text())
-            self.state.setdefault("ai_crops", {})
-            self.state.setdefault("photo_crops", {})
-            if self._migrate_legacy_crops():
+            try:
+                loaded = json.loads(self.state_file.read_text(encoding="utf-8"))
+                if not isinstance(loaded, dict):
+                    raise ValueError("state root is not an object")
+                self.state = {**default_state(), **loaded}
+            except (OSError, ValueError, TypeError, json.JSONDecodeError):
+                self._backup_bad_state()
+                self.state = default_state()
                 self.save()
+            else:
+                try:
+                    migrated = self._migrate_legacy_crops()
+                    repaired = self._repair_loaded_state()
+                except (ValueError, KeyError, TypeError, OSError):
+                    self._backup_bad_state()
+                    self.state = default_state()
+                    self.save()
+                    return
+                if migrated or repaired:
+                    self.save()
 
     def save(self):
-        atomic_json(self.state_file, self.state)
+        with self._lock:
+            atomic_json(self.state_file, self.state)
+
+    def _backup_bad_state(self):
+        try:
+            backup = self.state_file.with_name(f"state-broken-{time.strftime('%Y%m%d-%H%M%S')}.json")
+            self.state_file.replace(backup)
+        except OSError:
+            pass
+
+    def _repair_loaded_state(self):
+        changed = False
+        photos = []
+        for item in self.state.get("photos", []):
+            if not isinstance(item, dict):
+                changed = True
+                continue
+            photo_id = item.get("id")
+            name = item.get("name")
+            width = item.get("width")
+            height = item.get("height")
+            if not isinstance(photo_id, str) or not isinstance(name, str) or type(width) is not int or type(height) is not int:
+                changed = True
+                continue
+            path = self.folder / f"{photo_id}.png"
+            if not path.is_file():
+                changed = True
+                continue
+            item["white"] = [0, width]
+            thumb = self.folder / f"{photo_id}-thumb.jpg"
+            if not thumb.is_file():
+                image = read_image(path, formats=("PNG",))
+                preview = image.copy()
+                preview.thumbnail((800, 800), Image.Resampling.LANCZOS)
+                preview.save(thumb, quality=90, icc_profile=SRGB_BYTES)
+                changed = True
+            photos.append(item)
+        if len(photos) != len(self.state.get("photos", [])):
+            changed = True
+        self.state["photos"] = photos
+
+        repaired_groups = []
+        for group in self.state.get("groups", []):
+            try:
+                repaired_groups.append(self.validate_group(group))
+            except (ValueError, KeyError, TypeError):
+                changed = True
+        if len(repaired_groups) != len(self.state.get("groups", [])):
+            changed = True
+        self.state["groups"] = repaired_groups
+
+        photo_ids = {photo["id"] for photo in photos}
+        ai_crops = {}
+        for photo_id, top in self.state.get("ai_crops", {}).items() if isinstance(self.state.get("ai_crops"), dict) else []:
+            if photo_id in photo_ids and type(top) is int and 0 <= top < self.photo(photo_id)["height"]:
+                ai_crops[photo_id] = top
+            else:
+                changed = True
+        self.state["ai_crops"] = ai_crops
+
+        photo_crops = {}
+        for photo_id, box in self.state.get("photo_crops", {}).items() if isinstance(self.state.get("photo_crops"), dict) else []:
+            try:
+                self.validate_side({"photo": photo_id, "box": box})
+            except (ValueError, KeyError, TypeError):
+                changed = True
+            else:
+                photo_crops[photo_id] = box
+        self.state["photo_crops"] = photo_crops
+
+        # The format selector was removed from the UI.  Keep legacy state
+        # readable, but do not let an old square setting affect new exports.
+        if self.state.get("format") != default_state()["format"]:
+            self.state["format"] = default_state()["format"]
+            changed = True
+        if not isinstance(self.state.get("product"), str) or len(self.state["product"]) > 80:
+            self.state["product"] = default_state()["product"]
+            changed = True
+        return changed
 
     def _migrate_legacy_crops(self):
         changed = False
@@ -149,26 +246,31 @@ class StudioStore:
         return self.delete_photos([photo_id])[0]
 
     def delete_photos(self, photo_ids):
-        if not isinstance(photo_ids, list) or not photo_ids or len(photo_ids) > 100 or len(set(photo_ids)) != len(photo_ids):
-            raise ValueError("照片清單格式無效")
-        photos = [self.photo(photo_id) for photo_id in photo_ids]
-        paired = {side["photo"] for group in self.state["groups"] for side in (group["left"], group["right"])}
-        if paired.intersection(photo_ids):
-            raise ValueError("已配對的照片不能直接刪除，請先解除配對")
-        self.state["photos"] = [item for item in self.state["photos"] if item["id"] not in photo_ids]
-        ai_crops = self.state.setdefault("ai_crops", {})
-        for photo_id in photo_ids:
-            ai_crops.pop(photo_id, None)
-            self.state.setdefault("photo_crops", {}).pop(photo_id, None)
-            self._remove_photo_files(photo_id)
-        self._crop_cache = OrderedDict(
-            (key, value) for key, value in self._crop_cache.items() if key[0] not in photo_ids
-        )
-        self._crop_cache_bytes = sum(image.width * image.height * 3 for image, _ in self._crop_cache.values())
-        self.save()
-        return photos
+        with self._lock:
+            if not isinstance(photo_ids, list) or not photo_ids or len(photo_ids) > 100 or len(set(photo_ids)) != len(photo_ids):
+                raise ValueError("照片清單格式無效")
+            photos = [self.photo(photo_id) for photo_id in photo_ids]
+            paired = {side["photo"] for group in self.state["groups"] for side in (group["left"], group["right"])}
+            if paired.intersection(photo_ids):
+                raise ValueError("已配對的照片不能直接刪除，請先解除配對")
+            self.state["photos"] = [item for item in self.state["photos"] if item["id"] not in photo_ids]
+            ai_crops = self.state.setdefault("ai_crops", {})
+            for photo_id in photo_ids:
+                ai_crops.pop(photo_id, None)
+                self.state.setdefault("photo_crops", {}).pop(photo_id, None)
+                self._remove_photo_files(photo_id)
+            self._crop_cache = OrderedDict(
+                (key, value) for key, value in self._crop_cache.items() if key[0] not in photo_ids
+            )
+            self._crop_cache_bytes = sum(image.width * image.height * 3 for image, _ in self._crop_cache.values())
+            self.save()
+            return photos
 
     def reset(self, cleanup=False):
+        with self._lock:
+            return self._reset_unlocked(cleanup)
+
+    def _reset_unlocked(self, cleanup=False):
         if not isinstance(cleanup, bool):
             raise ValueError("清理選項格式無效")
         removed_files = self._remove_all_photo_files() if cleanup else 0
@@ -179,6 +281,10 @@ class StudioStore:
         return removed_files
 
     def import_photo(self, name, raw):
+        with self._lock:
+            return self._import_photo_unlocked(name, raw)
+
+    def _import_photo_unlocked(self, name, raw):
         if not raw or len(raw) > 40_000_000:
             raise ValueError("每張照片須小於 40 MB")
         if not isinstance(name, str) or len(name) > 240 or Path(name).suffix.lower() not in INPUT_EXTENSIONS:
@@ -252,6 +358,10 @@ class StudioStore:
         return result
 
     def update(self, data):
+        with self._lock:
+            return self._update_unlocked(data)
+
+    def _update_unlocked(self, data):
         if not isinstance(data, dict) or set(data) not in ({"product", "groups", "format"}, {"product", "groups", "format", "ai_crops"}, {"product", "groups", "format", "photo_crops"}, {"product", "groups", "format", "ai_crops", "photo_crops"}):
             raise ValueError("工作資料格式無效")
         if not isinstance(data["product"], str) or len(data["product"]) > 80 or data["format"] not in FORMATS:
@@ -391,6 +501,10 @@ class StudioStore:
             return None
 
     def export(self):
+        with self._lock:
+            return self._export_unlocked()
+
+    def _export_unlocked(self):
         if not self.state["photos"] and not self.state["groups"]:
             raise ValueError("先匯入照片")
         signature = self._export_signature()

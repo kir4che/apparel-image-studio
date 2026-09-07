@@ -32,6 +32,7 @@ PREFERRED_MODEL_FILE = "Qwen3.5-2B-Q4_K_S.gguf"
 PREFERRED_PROJECTOR_FILE = "mmproj-F16.gguf"
 CONFIG_FILE = ROOT / "config.json"
 VERSION = "gate-v9-multimodal-projector"
+ANALYSIS_PREVIEW_EDGE = 768 if sys.platform == "win32" else 1024
 CACHE_MAX_AGE_SECONDS = 30 * 24 * 60 * 60
 CACHE_MAX_BYTES = 100 * 1024 * 1024
 EXTENSIONS = {".jpg", ".jpeg", ".png"}
@@ -53,6 +54,16 @@ SCHEMA = {
     },
 }
 SCHEMA["required"] = list(SCHEMA["properties"])
+
+
+def analysis_dimensions(size):
+    """Return the bounded dimensions sent to the vision model."""
+    width, height = size
+    longest = max(width, height)
+    if longest <= ANALYSIS_PREVIEW_EDGE:
+        return [width, height]
+    scale = ANALYSIS_PREVIEW_EDGE / longest
+    return [max(1, round(width * scale)), max(1, round(height * scale))]
 NON_RETRYABLE_CUT_ISSUES = {
     "有完整頭部但未找到安全裁線，保留原圖待確認",
     "上緣裁線過近或切入商品，保留原圖待確認",
@@ -358,7 +369,8 @@ def prune_cache(cache_dir: Path, max_age_seconds=CACHE_MAX_AGE_SECONDS, max_byte
 
 def analyze(image: Image.Image, source_hash: str, product: str, cache_dir: Path, model_identity: str, requester=None):
     identity = {"source": source_hash, "product": product, "model": model_identity,
-                "version": VERSION, "system": SYSTEM, "schema": SCHEMA, "preview": 1024}
+                "version": VERSION, "system": SYSTEM, "schema": SCHEMA,
+                "preview": ANALYSIS_PREVIEW_EDGE}
     key = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()
     cached = cache_dir / f"{key}.json"
     attempts = []
@@ -371,7 +383,10 @@ def analyze(image: Image.Image, source_hash: str, product: str, cache_dir: Path,
         attempts = list(saved["attempts"])
         feedback = json.dumps({"rejected": saved["analysis"], "problems": issues}, ensure_ascii=False)
     preview = image.copy()
-    preview.thumbnail((1024, 1024), Image.Resampling.LANCZOS)
+    preview.thumbnail(
+        (ANALYSIS_PREVIEW_EDGE, ANALYSIS_PREVIEW_EDGE),
+        Image.Resampling.LANCZOS,
+    )
     buf = io.BytesIO()
     preview.save(buf, format="JPEG", quality=90)
     img_b64 = base64.b64encode(buf.getvalue()).decode()
@@ -595,7 +610,7 @@ def main():
             print(f"[{i}/{len(args.select)}] {name}", flush=True)
             try:
                 image = read_image(Path(item["path"]))
-                item.update({"original_size": image.size, "analysis_size": image.size})
+                item.update({"original_size": list(image.size), "analysis_size": analysis_dimensions(image.size)})
                 item.update(analyze(image, item["sha256"], args.product, ROOT / "cache", json.dumps(model_identity, sort_keys=True)))
                 make_previews(image, item, assets, i)
             except (OSError, ValueError, Image.DecompressionBombError, Image.DecompressionBombWarning) as exc:
