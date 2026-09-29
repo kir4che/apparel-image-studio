@@ -1274,7 +1274,7 @@ function renderAll() {
 }
 async function refresh() {
   state = await api("/api/state");
-  state.format = "natural";
+  state.format = "square";
   token = state.token;
   renderAll();
 }

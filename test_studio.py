@@ -85,10 +85,10 @@ class StudioTests(unittest.TestCase):
         self.assertTrue(list(self.store.folder.glob("state-broken-*.json")))
         self.assertTrue(self.store.state_file.is_file())
 
-    def test_legacy_square_format_is_migrated_to_natural(self):
-        self.store.update({"product": "舊工作", "groups": [], "format": "square"})
+    def test_collage_format_is_migrated_to_square(self):
+        self.store.update({"product": "舊工作", "groups": [], "format": "natural"})
         restored = StudioStore(self.store.folder, self.store.output)
-        self.assertEqual(restored.state["format"], "natural")
+        self.assertEqual(restored.state["format"], "square")
 
     def test_missing_working_photo_is_removed_on_restart(self):
         self.store.update({"product": "test", "groups": [self.group], "format": "natural",
@@ -186,8 +186,7 @@ class StudioTests(unittest.TestCase):
         self.assertNotEqual(first["folder"], recreated["folder"])
         self.assertFalse(recreated["reused"])
         restored = StudioStore(self.store.folder, self.store.output)
-        # The removed output-ratio control migrates legacy square state to natural.
-        self.assertNotEqual(restored.export()["folder"], recreated["folder"])
+        self.assertEqual(restored.export()["folder"], recreated["folder"])
         changed = copy.deepcopy(self.group)
         changed["left"]["top"] = 51
         restored.update({"product": "中文裙子", "groups": [changed], "format": "square"})

@@ -25,7 +25,7 @@ PREVIEW_MAX_EDGE = 1600
 
 
 def default_state():
-    return {"product": "這一件商品", "photos": [], "groups": [], "format": "natural", "ai_crops": {}, "photo_crops": {}}
+    return {"product": "這一件商品", "photos": [], "groups": [], "format": "square", "ai_crops": {}, "photo_crops": {}}
 
 
 def render_pair(images, mode="square"):
@@ -174,8 +174,7 @@ class StudioStore:
                 photo_crops[photo_id] = box
         self.state["photo_crops"] = photo_crops
 
-        # The format selector was removed from the UI.  Keep legacy state
-        # readable, but do not let an old square setting affect new exports.
+        # The format selector was removed from the UI; collages are always 1:1.
         if self.state.get("format") != default_state()["format"]:
             self.state["format"] = default_state()["format"]
             changed = True
@@ -388,7 +387,7 @@ class StudioStore:
                 raise ValueError("照片裁切範圍超出照片")
             if box[2] - box[0] < 20 or box[3] - box[1] < 20:
                 raise ValueError("照片裁切範圍太窄，至少要保留 20 個像素")
-        self.state.update(product=data["product"], format=data["format"], groups=groups, ai_crops=ai_crops, photo_crops=photo_crops)
+        self.state.update(product=data["product"], format="square", groups=groups, ai_crops=ai_crops, photo_crops=photo_crops)
         self.save()
 
     def crop(self, side, cache=True):
