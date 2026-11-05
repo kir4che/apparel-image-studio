@@ -10,12 +10,6 @@
     <script src="/app.js" defer></script>
   </head>
   <body>
-    <!-- THESIS: A photo workbench: choose two pictures and see the actual collage.
-  OWN-WORLD: Cool grey workspace, white photo surfaces, restrained blue actions, blue crop frame.
-  STORY: Import one product, pick a pair, inspect it, collect pairs, export locally.
-  FIRST VIEWPORT: A thumbnail library at left and equal-height collage preview at right; studio below preview, export in the completed-pair tray.
-  FORM: Operate workbench, code-led; concept-seed returned no key. Signature interaction: drag the crop frame edges or corners directly on the source photo.
-  FINISH: unreviewed and undocumented is unfinished; this build ends with the finish review, the verdict, DESIGN.md, and every shipping raster carrying its provenance -->
     <svg class="symbols" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
       <defs>
         <symbol id="i-pair" viewBox="0 0 24 24">
@@ -99,21 +93,33 @@
             />
           </div>
           <div class="selection-bar">
-            <span id="selection-text">勾選兩張，組成一張左右拼圖</span>
+            <span id="selection-text"></span>
             <div class="selection-actions">
-              <button id="pair-mode" class="mode-button" aria-pressed="true">
+              <button id="pair-mode" class="mode-button" aria-pressed="false">
                 拼圖</button
-              ><button id="single-crop-mode" class="mode-button" aria-pressed="false">
+              ><button
+                id="single-crop-mode"
+                class="mode-button"
+                aria-pressed="false"
+              >
                 單張裁切</button
+              ><button id="square-selected" class="small secondary" disabled>
+                1:1 補白</button
               ><button
                 id="delete-mode"
                 class="mode-button danger"
                 aria-pressed="false"
               >
                 刪除照片</button
-              ><button id="delete-selected" class="small danger" hidden disabled>
-                刪除已選
-              </button><button id="clear-selection" class="quiet small" disabled>
+              ><button id="select-all" class="quiet small" disabled>全選</button
+              ><button
+                id="delete-selected"
+                class="small danger"
+                hidden
+                disabled
+              >
+                刪除已選</button
+              ><button id="clear-selection" class="quiet small" disabled>
                 清除勾選
               </button>
             </div>
@@ -149,7 +155,6 @@
             <div class="section-heading">
               <div>
                 <h2 id="editor-title">拼圖預覽</h2>
-                <p id="editor-subtitle">先從左側選兩張照片</p>
               </div>
               <div class="editor-heading-actions">
                 <button id="add-pair" class="primary" disabled>
@@ -157,40 +162,56 @@
                 </button>
               </div>
             </div>
-          <div id="preview-stage" class="preview-stage">
-            <div id="preview-loading" class="preview-loading" hidden aria-live="polite">
-              正在更新預覽…
+            <div id="preview-stage" class="preview-stage">
+              <div
+                id="preview-loading"
+                class="preview-loading"
+                hidden
+                aria-live="polite"
+              >
+                正在更新預覽…
+              </div>
+              <div id="preview-empty">
+                <svg><use href="#i-pair" /></svg>
+                <p>兩張照片，一張拼圖</p>
+                <span>依勾選順序放在左、右兩側</span>
+              </div>
+              <div id="preview-frame" hidden>
+                <img id="preview" alt="目前左右拼圖的實際輸出預覽" />
+                <div id="preview-crop-box" hidden></div>
+              </div>
             </div>
-            <div id="preview-empty">
-              <svg><use href="#i-pair" /></svg>
-              <p>兩張照片，一張拼圖</p>
-              <span>依勾選順序放在左、右兩側</span>
+            <div
+              id="single-crop-editor"
+              class="single-crop-editor"
+              hidden
+            ></div>
+            <div id="single-crop-actions" class="single-crop-actions" hidden>
+              <button id="single-crop-square-toggle" class="mode-button">
+                1:1 補白
+              </button>
+              <button id="single-crop-square-crop" class="mode-button">
+                1:1 裁切
+              </button>
+              <button id="single-crop-reset" class="crop-reset">
+                還原範圍
+              </button>
             </div>
-            <div id="preview-frame" hidden>
-              <img id="preview" alt="目前左右拼圖的實際輸出預覽" />
-              <div id="preview-crop-box" hidden></div>
+            <div class="pair-actions">
+              <button id="preview-crop-toggle" class="crop-action" disabled>
+                選擇裁切</button
+              ><button id="preview-crop-reset" class="crop-reset" hidden>
+                取消裁切</button
+              ><button id="swap" disabled>
+                <svg><use href="#i-swap" /></svg>交換左右</button
+              ><button id="remove-pair" class="danger quiet" hidden>
+                解除這組
+              </button>
             </div>
-          </div>
-          <div id="single-crop-editor" class="single-crop-editor" hidden></div>
-          <div id="single-crop-actions" class="single-crop-actions" hidden>
-            <button id="single-crop-reset" class="crop-reset">恢復原始範圍</button>
-            <button id="single-crop-cancel">取消選取</button>
-          </div>
-          <div class="pair-actions">
-            <button id="preview-crop-toggle" class="crop-action" disabled>
-              選擇裁切</button
-            ><button id="preview-crop-reset" class="crop-reset" hidden>
-              取消裁切</button
-            ><button id="swap" disabled>
-              <svg><use href="#i-swap" /></svg>交換左右</button
-            ><button id="remove-pair" class="danger quiet" hidden>
-              解除這組
-            </button>
-          </div>
-          <details id="crop-details">
-            <summary>自由裁切</summary>
-            <div id="crop-editors" class="crop-editors"></div>
-          </details>
+            <details id="crop-details">
+              <summary>自由裁切</summary>
+              <div id="crop-editors" class="crop-editors"></div>
+            </details>
           </section>
         </div>
       </div>

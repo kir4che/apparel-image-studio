@@ -15,7 +15,7 @@ let state,
   aiBusy = false,
   exporting = false,
   deleteMode = false,
-  photoMode = "pair",
+  photoMode = null,
   singleCropPhotoId = null,
   singleCropDraft = null,
   singleCropBeforeEdit = null,
@@ -99,8 +99,11 @@ function requestPairPreview(group) {
 const photoSrc = (id) => {
   const hasCrop = state.photo_crops?.[id];
   const hasAi = state.ai_crops?.[id];
-  const view = hasCrop ? "?view=crop" : hasAi ? "?view=ai" : "";
-  const ts = cropVersions.has(id) ? `${view ? "&" : "?"}t=${cropVersions.get(id)}` : "";
+  const isSquare = (state.square_photos || []).includes(id);
+  const view = hasCrop || isSquare ? "?view=crop" : hasAi ? "?view=ai" : "";
+  const ts = cropVersions.has(id)
+    ? `${view ? "&" : "?"}t=${cropVersions.get(id)}`
+    : "";
   return `/api/photo/${id}${view}${ts}`;
 };
 const side = (id) => {
@@ -108,9 +111,14 @@ const side = (id) => {
 };
 const normalizeSide = (s) => {
   if (s.box) return { photo: s.photo, box: [...s.box] };
-    const p = photo(s.photo),
-      top = s.cut ? s.top : 0;
-  return { photo: s.photo, box: s.cut ? [p.white[0], top, p.white[1], p.height] : photoBaseBox(s.photo) };
+  const p = photo(s.photo),
+    top = s.cut ? s.top : 0;
+  return {
+    photo: s.photo,
+    box: s.cut
+      ? [p.white[0], top, p.white[1], p.height]
+      : photoBaseBox(s.photo),
+  };
 };
 const current = () =>
   active ? state.groups.find((g) => g.id === active) : draft;
@@ -144,6 +152,7 @@ function statePayload() {
       format: state.format,
       ai_crops: state.ai_crops || {},
       photo_crops: state.photo_crops || {},
+      square_photos: state.square_photos || [],
     }),
   );
 }
@@ -170,7 +179,8 @@ function flushPendingSave() {
     })
     .finally(() => {
       saveInFlight--;
-      if (savePending && !saveTimer) saveTimer = setTimeout(flushPendingSave, 220);
+      if (savePending && !saveTimer)
+        saveTimer = setTimeout(flushPendingSave, 220);
     });
   return operation;
 }
@@ -191,7 +201,9 @@ function persist() {
   savePending = statePayload();
   clearTimeout(saveTimer);
   saveTimer = setTimeout(flushPendingSave, 220);
-  const promise = new Promise((resolve, reject) => saveWaiters.push({ resolve, reject }));
+  const promise = new Promise((resolve, reject) =>
+    saveWaiters.push({ resolve, reject }),
+  );
   promise.catch(() => {});
   return promise;
 }
@@ -243,18 +255,50 @@ function updateActions() {
   previewReset.disabled = busy;
   $("#single-crop-actions").hidden = !single || !singleCropPhotoId;
   $("#single-crop-reset").disabled = busy || !singleCropDraft;
-  $("#single-crop-cancel").disabled = busy;
+  const available = getAvailablePhotos();
+  const selectAllBtn = $("#select-all");
+  if (selectAllBtn) {
+    selectAllBtn.hidden = single || photoMode === "pair";
+    selectAllBtn.disabled = busy || !available.length;
+    selectAllBtn.textContent =
+      selected.length > 0 && selected.length === available.length
+        ? "取消全選"
+        : "全選";
+  }
+  const squareBtn = $("#square-selected");
+  if (squareBtn) {
+    squareBtn.hidden = deleteMode || single;
+    squareBtn.disabled =
+      busy ||
+      !selected.length ||
+      (photoMode === "pair" && selected.length !== 1);
+    const allSquare =
+      selected.length > 0 &&
+      selected.every((id) => (state.square_photos || []).includes(id));
+    squareBtn.textContent = allSquare ? "取消 1:1 補白" : "1:1 補白";
+  }
+  const squareToggle = $("#single-crop-square-toggle");
+  if (squareToggle) {
+    const isSquare = (state.square_photos || []).includes(singleCropPhotoId);
+    squareToggle.setAttribute("aria-pressed", String(isSquare));
+    squareToggle.textContent = isSquare ? "取消 1:1 補白" : "1:1 補白";
+    squareToggle.disabled = busy || !singleCropPhotoId;
+  }
+}
+function getAvailablePhotos() {
+  const used = new Set(
+    state.groups.flatMap((g) => [g.left.photo, g.right.photo]),
+  );
+  return photoMode === "crop"
+    ? state.photos
+    : state.photos.filter((p) => !used.has(p.id));
 }
 function renderLibrary() {
   const grid = $("#photo-grid");
   const focusedId = grid.contains(document.activeElement)
     ? document.activeElement.dataset.photoId
     : null;
-  const used = new Set(
-    state.groups.flatMap((g) => [g.left.photo, g.right.photo]),
-  );
-  const available =
-    photoMode === "crop" ? state.photos : state.photos.filter((p) => !used.has(p.id));
+  const available = getAvailablePhotos();
   grid.replaceChildren();
   grid.classList.toggle("delete-mode", deleteMode);
   $("#library-empty").hidden = available.length > 0;
@@ -277,9 +321,12 @@ function renderLibrary() {
     const position = selected.indexOf(p.id);
     button.setAttribute(
       "aria-label",
-      `${deleteMode ? "勾選" : photoMode === "crop" ? cropSelected ? "正在裁切" : "裁切" : "選擇"} ${p.name}`,
+      `${deleteMode ? "勾選" : photoMode === "crop" ? (cropSelected ? "正在裁切" : "裁切") : "選擇"} ${p.name}`,
     );
-    button.setAttribute("aria-pressed", String(cropSelected || selected.includes(p.id)));
+    button.setAttribute(
+      "aria-pressed",
+      String(cropSelected || selected.includes(p.id)),
+    );
     const image = node("img");
     image.src = photoSrc(p.id);
     image.alt = p.name;
@@ -297,11 +344,15 @@ function renderLibrary() {
             ? cropSelected
               ? "裁切中"
               : ""
-          : position === 0
-            ? "左"
-            : position === 1
-              ? "右"
-              : "",
+            : photoMode === "pair"
+              ? position === 0
+                ? "左"
+                : position === 1
+                  ? "右"
+                  : ""
+              : position >= 0
+                ? "✓"
+                : "",
         `selection-marker${photoMode === "crop" ? " crop-selection-marker" : ""}`,
       ),
       node("span", p.name, "photo-name"),
@@ -311,6 +362,12 @@ function renderLibrary() {
       marker.title = "已裁切";
       marker.setAttribute("aria-label", "已裁切");
       button.append(marker);
+    }
+    if ((state.square_photos || []).includes(p.id)) {
+      const squareMarker = node("span", "1:1", "square-marker");
+      squareMarker.title = "已設定 1:1 補白";
+      squareMarker.setAttribute("aria-label", "已設定 1:1 補白");
+      button.append(squareMarker);
     }
     button.onclick = () => {
       if (deleteMode) toggleDeleteSelection(p.id);
@@ -340,17 +397,18 @@ function renderLibrary() {
         : "選擇一張照片開始裁切"
       : deleteMode
         ? selected.length
-          ? `已選 ${selected.length} 張，按「刪除已選」`
+          ? `已選 ${selected.length} 張`
           : "刪除模式已開啟，點擊照片勾選"
-        : selected.length
-          ? `已選 ${selected.length} / 2 張${selected.length === 2 ? "，右側可預覽並加入拼圖" : "，再選一張"}`
-          : "勾選兩張，組成一張左右拼圖";
+        : selected.length === 0
+          ? ""
+          : `已選 ${selected.length} 張`;
   renderAiResults();
 }
 function updateSelectionUI() {
   for (const button of $("#photo-grid").querySelectorAll(".photo")) {
     const position = selected.indexOf(button.dataset.photoId);
-    const cropSelected = photoMode === "crop" && singleCropPhotoId === button.dataset.photoId;
+    const cropSelected =
+      photoMode === "crop" && singleCropPhotoId === button.dataset.photoId;
     button.setAttribute("aria-pressed", String(cropSelected || position >= 0));
     const marker = button.querySelector(".selection-marker");
     if (marker)
@@ -362,14 +420,18 @@ function updateSelectionUI() {
           ? cropSelected
             ? "裁切中"
             : ""
-        : position === 0
-          ? "左"
-          : position === 1
-            ? "右"
-            : "";
+          : photoMode === "pair"
+            ? position === 0
+              ? "左"
+              : position === 1
+                ? "右"
+                : ""
+            : position >= 0
+              ? "✓"
+              : "";
     button.setAttribute(
       "aria-label",
-      `${deleteMode ? "勾選" : photoMode === "crop" ? cropSelected ? "正在裁切" : "裁切" : "選擇"} ${photo(button.dataset.photoId)?.name || "照片"}`,
+      `${deleteMode ? "勾選" : photoMode === "crop" ? (cropSelected ? "正在裁切" : "裁切") : "選擇"} ${photo(button.dataset.photoId)?.name || "照片"}`,
     );
   }
   $("#selection-text").textContent =
@@ -379,11 +441,11 @@ function updateSelectionUI() {
         : "選擇一張照片開始裁切"
       : deleteMode
         ? selected.length
-          ? `已選 ${selected.length} 張，按「刪除已選」`
+          ? `已選 ${selected.length} 張`
           : "刪除模式已開啟，點擊照片勾選"
-        : selected.length
-          ? `已選 ${selected.length} / 2 張${selected.length === 2 ? "，右側可預覽並加入拼圖" : "，再選一張"}`
-          : "勾選兩張，組成一張左右拼圖";
+        : selected.length === 0
+          ? ""
+          : `已選 ${selected.length} 張`;
   $("#clear-selection").disabled = !selected.length || busy;
   updateActions();
 }
@@ -461,7 +523,9 @@ async function deletePhoto(id) {
 }
 function renderAiResults() {
   const container = $("#ai-results");
-  aiResults = aiResults.filter((x) => photo(x.id) && !state.photo_crops?.[x.id]);
+  aiResults = aiResults.filter(
+    (x) => photo(x.id) && !state.photo_crops?.[x.id],
+  );
   const proposed = aiResults.filter((x) => x.analysis && x.crop_box[1] > 0);
   const failed = aiResults.filter((x) => !x.analysis);
   if (!proposed.length && !failed.length) {
@@ -638,13 +702,9 @@ function select(id) {
     previewCropBeforeEdit = null;
   }
   if (selected.includes(id)) selected = selected.filter((x) => x !== id);
-  else if (selected.length < 2) selected.push(id);
-  else {
-    message("已選兩張，先加入拼圖或取消其中一張");
-    return;
-  }
+  else if (photoMode !== "pair" || selected.length < 2) selected.push(id);
   draft =
-    selected.length === 2
+    selected.length === 2 && photoMode === "pair"
       ? {
           id: crypto.randomUUID(),
           left: side(selected[0]),
@@ -719,7 +779,10 @@ function removePair(id) {
   if (busy) return;
   const index = state.groups.findIndex((g) => g.id === id);
   if (index < 0) return;
-  if (!confirm(`確定刪除第 ${index + 1} 組拼圖？原照片與已匯出的檔案不受影響。`)) return;
+  if (
+    !confirm(`確定刪除第 ${index + 1} 組拼圖？原照片與已匯出的檔案不受影響。`)
+  )
+    return;
   const focusInTray = $("#pair-tray").contains(document.activeElement);
   state.groups.splice(index, 1);
   invalidatePairPreview(id);
@@ -749,7 +812,9 @@ function singleCropBox() {
 }
 function singleCropDirty() {
   if (!singleCropDraft || !singleCropBeforeEdit) return false;
-  return JSON.stringify(singleCropDraft.box) !== JSON.stringify(singleCropBeforeEdit);
+  return (
+    JSON.stringify(singleCropDraft.box) !== JSON.stringify(singleCropBeforeEdit)
+  );
 }
 async function selectSingleCrop(id) {
   if (busy || photoMode !== "crop") return;
@@ -819,42 +884,34 @@ async function flushSingleCropApply() {
   if (!singleCropDirty()) return true;
   return (await applySingleCrop()) !== false;
 }
-function cancelSingleCrop() {
-  clearTimeout(singleCropApplyTimer);
-  singleCropApplyTimer = null;
-  clearSingleCrop();
-  renderLibrary();
-  renderEditor();
-}
 function resetSingleCrop() {
   if (!singleCropDraft || !singleCropPhotoId) return;
-  singleCropDraft.box = [0, 0, photo(singleCropPhotoId).width, photo(singleCropPhotoId).height];
+  singleCropDraft.box = [
+    0,
+    0,
+    photo(singleCropPhotoId).width,
+    photo(singleCropPhotoId).height,
+  ];
   renderEditor();
   queueSingleCropApply();
 }
 function renderEditor() {
   const singleMode = photoMode === "crop";
   const single = singleMode && singleCropDraft;
+  const pairMode = photoMode === "pair";
   $("#editor-title").textContent = singleMode ? "單張照片裁切" : "拼圖預覽";
-  $("#preview-empty p").textContent = singleMode
-    ? "單張照片裁切"
-    : "兩張照片，一張拼圖";
-  $("#preview-empty span").textContent = singleMode
-    ? "從左側選一張照片開始"
-    : "依勾選順序放在左、右兩側";
+  $(".editor > .section-heading").hidden = !pairMode && !singleMode;
+  $("#preview-stage").hidden = !pairMode;
+  $(".pair-actions").hidden = !pairMode;
+  $("#preview-empty p").textContent = "兩張照片，一張拼圖";
+  $("#preview-empty span").textContent = "依勾選順序放在左、右兩側";
   $("#single-crop-editor").hidden = !single;
   $("#single-crop-editor").replaceChildren();
-  if (single) $("#single-crop-editor").append(cropEditor(singleCropDraft, "single", { single: true }));
+  if (single)
+    $("#single-crop-editor").append(
+      cropEditor(singleCropDraft, "single", { single: true }),
+    );
   const group = current();
-  $("#editor-subtitle").textContent = active
-    ? `正在調整第 ${state.groups.findIndex((g) => g.id === active) + 1} 組`
-    : group
-      ? "確認這個組合，再按「加入拼圖」"
-      : single
-        ? "調整照片範圍後套用，會同步更新相關拼圖"
-        : singleMode
-          ? "先從左側選一張照片"
-          : "先從左側選兩張照片";
   $("#crop-details").hidden = single || !group;
   $("#crop-editors").replaceChildren();
   if (group)
@@ -876,7 +933,7 @@ function cropEditor(s, key, options = {}) {
   delete s.cut;
   s.box = old.box;
   const panel = node("div", null, "crop-editor");
-  panel.append(node("h3", `${label} · ${p.name}`));
+  if (!single) panel.append(node("h3", `${label} · ${p.name}`));
   const stage = node("div", null, "crop-stage"),
     image = node("img"),
     box = node("div", null, "crop-box");
@@ -910,10 +967,10 @@ function cropEditor(s, key, options = {}) {
   const controls = node("div", null, "crop-controls"),
     readout = node("div", null, "crop-readout"),
     amount = node("span"),
-    reset = node("button", "恢復原始範圍", "crop-reset");
+    reset = node("button", "還原範圍", "crop-reset");
   reset.type = "button";
   reset.hidden = single;
-  reset.setAttribute("aria-label", `${label}恢復原始裁切範圍`);
+  reset.setAttribute("aria-label", `${label}還原裁切範圍`);
   controls.append(readout, reset);
   readout.append(amount);
   panel.append(controls);
@@ -933,7 +990,12 @@ function cropEditor(s, key, options = {}) {
     box.style.top = `${(top / p.height) * 100}%`;
     box.style.width = `${((right - left) / width) * 100}%`;
     box.style.height = `${((bottom - top) / p.height) * 100}%`;
-    amount.textContent = `裁切範圍：${right - left} × ${bottom - top} px`;
+    const isSquare = (state.square_photos || []).includes(p.id);
+    const cw = right - left,
+      ch = bottom - top;
+    amount.textContent = isSquare
+      ? `裁切範圍：${cw} × ${ch} px · 1:1 補白輸出：${Math.max(cw, ch)} × ${Math.max(cw, ch)} px`
+      : `裁切範圍：${cw} × ${ch} px`;
     for (const name of ["left", "right", "top", "bottom"])
       handles[name].setAttribute("aria-valuenow", String(s.box[index[name]]));
   }
@@ -1023,6 +1085,43 @@ function cropEditor(s, key, options = {}) {
         h.releasePointerCapture(event.pointerId);
     };
   }
+  let dragStart = null;
+  box.style.pointerEvents = "auto";
+  box.style.cursor = "move";
+  box.onpointerdown = (event) => {
+    if (event.target !== box) return;
+    event.preventDefault();
+    box.setPointerCapture(event.pointerId);
+    dragStart = {
+      x: event.clientX,
+      y: event.clientY,
+      box: [...s.box],
+      rect: stage.getBoundingClientRect(),
+    };
+  };
+  box.onpointermove = (event) => {
+    if (!dragStart || !box.hasPointerCapture(event.pointerId)) return;
+    const dx =
+      ((event.clientX - dragStart.x) / dragStart.rect.width) *
+      (bounds[2] - bounds[0]);
+    const dy =
+      ((event.clientY - dragStart.y) / dragStart.rect.height) * p.height;
+    const [l, t, r, b] = dragStart.box,
+      w = r - l,
+      h = b - t,
+      left = Math.max(bounds[0], Math.min(bounds[2] - w, l + dx)),
+      top = Math.max(bounds[1], Math.min(bounds[3] - h, t + dy));
+    s.box = [
+      Math.round(left),
+      Math.round(top),
+      Math.round(left + w),
+      Math.round(top + h),
+    ];
+    changed();
+  };
+  box.onpointerup = () => {
+    dragStart = null;
+  };
   sync();
   return panel;
 }
@@ -1191,10 +1290,15 @@ function scheduleSinglePreview(delay = 80) {
     const controller = new AbortController();
     previewController = controller;
     try {
-      const result = await api("/api/photo-preview", {
-        photo_id: singleCropPhotoId,
-        box: singleCropDraft.box,
-      }, { signal: controller.signal });
+      const result = await api(
+        "/api/photo-preview",
+        {
+          photo_id: singleCropPhotoId,
+          box: singleCropDraft.box,
+          square: (state.square_photos || []).includes(singleCropPhotoId),
+        },
+        { signal: controller.signal },
+      );
       if (serial !== previewSerial) return;
       previewBaseSize = result.size;
       $("#preview").src = result.image;
@@ -1203,11 +1307,11 @@ function scheduleSinglePreview(delay = 80) {
       $("#preview-empty").hidden = true;
       $("#preview-crop-box").hidden = true;
     } catch (error) {
-      if (error.name !== "AbortError" && serial === previewSerial) message(error.message, true);
+      if (error.name !== "AbortError" && serial === previewSerial)
+        message(error.message, true);
     } finally {
       if (previewController === controller) previewController = null;
-      if (serial === previewSerial)
-        $("#preview-loading").hidden = true;
+      if (serial === previewSerial) $("#preview-loading").hidden = true;
       if (serial === previewSerial)
         $("#preview-stage").removeAttribute("aria-busy");
     }
@@ -1233,10 +1337,14 @@ function schedulePreview(delay = 160) {
     try {
       const requestGroup = JSON.parse(JSON.stringify(group));
       if (previewCropMode) delete requestGroup.preview_crop;
-      const result = await api("/api/preview", {
-        group: requestGroup,
-        format: state.format,
-      }, { signal: controller.signal });
+      const result = await api(
+        "/api/preview",
+        {
+          group: requestGroup,
+          format: state.format,
+        },
+        { signal: controller.signal },
+      );
       if (serial !== previewSerial) return;
       previewBaseSize = result.size;
       $("#preview").src = result.image;
@@ -1259,8 +1367,7 @@ function schedulePreview(delay = 160) {
       }
     } finally {
       if (previewController === controller) previewController = null;
-      if (serial === previewSerial)
-        $("#preview-loading").hidden = true;
+      if (serial === previewSerial) $("#preview-loading").hidden = true;
       if (serial === previewSerial)
         $("#preview-stage").removeAttribute("aria-busy");
     }
@@ -1343,7 +1450,11 @@ async function importFiles(list) {
     const initial = state.photos.length === 0;
     await refresh();
     if (initial && folderNames.size === 1) {
-      state.product = [...folderNames][0].replace(/\\/g, "/").split("/").pop().slice(0, 80);
+      state.product = [...folderNames][0]
+        .replace(/\\/g, "/")
+        .split("/")
+        .pop()
+        .slice(0, 80);
       $("#product").value = state.product;
       await persist();
     }
@@ -1371,6 +1482,102 @@ $("#folder-button").onclick = () => $("#folder-input").click();
 $("#files-button").onclick = () => $("#files-input").click();
 $("#folder-input").onchange = (event) => importFiles(event.target.files);
 $("#files-input").onchange = (event) => importFiles(event.target.files);
+async function applySquareSelected() {
+  if (busy || !selected.length) return;
+  const ids = [...selected];
+  state.square_photos = state.square_photos || [];
+  const allSquare = ids.every((id) => state.square_photos.includes(id));
+  if (allSquare) {
+    state.square_photos = state.square_photos.filter((id) => !ids.includes(id));
+  } else {
+    for (const id of ids) {
+      if (!state.square_photos.includes(id)) {
+        state.square_photos.push(id);
+      }
+    }
+  }
+  invalidateExport();
+  ids.forEach(markPhotoPreviewChanged);
+  try {
+    await persist();
+    message(
+      allSquare
+        ? `已取消 ${ids.length} 張照片的 1:1 補白`
+        : `已將 ${ids.length} 張照片設為 1:1 補白`,
+    );
+  } catch (error) {
+    message("保存失敗：" + error.message, true);
+    return;
+  }
+  selected = [];
+  draft = null;
+  renderLibrary();
+  renderTray();
+  renderEditor();
+  updateActions();
+}
+
+function toggleSelectAll() {
+  if (busy || photoMode === "crop") return;
+  const available = getAvailablePhotos();
+  if (selected.length === available.length) {
+    selected = [];
+  } else {
+    selected = available.map((p) => p.id);
+  }
+  draft =
+    selected.length === 2 && photoMode === "pair"
+      ? {
+          id: crypto.randomUUID(),
+          left: side(selected[0]),
+          right: side(selected[1]),
+        }
+      : null;
+  updateSelectionUI();
+  renderTray();
+  renderEditor();
+  updateActions();
+}
+
+async function toggleSingleCropSquare() {
+  if (busy || !singleCropPhotoId) return;
+  const id = singleCropPhotoId;
+  state.square_photos = state.square_photos || [];
+  const index = state.square_photos.indexOf(id);
+  const willBeSquare = index < 0;
+  if (willBeSquare) {
+    state.square_photos.push(id);
+  } else {
+    state.square_photos.splice(index, 1);
+  }
+  invalidateExport();
+  markPhotoPreviewChanged(id);
+  try {
+    await persist();
+    message(willBeSquare ? "已設為 1:1 補白" : "已取消 1:1 補白");
+  } catch (error) {
+    message("保存失敗：" + error.message, true);
+    return;
+  }
+  renderLibrary();
+  renderEditor();
+  scheduleSinglePreview(0);
+}
+
+function cropSingleToSquare() {
+  if (busy || !singleCropDraft || !singleCropPhotoId) return;
+  const [x0, y0, x1, y1] = singleCropDraft.box;
+  const side = Math.min(x1 - x0, y1 - y0);
+  const left = Math.round((x0 + x1 - side) / 2);
+  const top = Math.round((y0 + y1 - side) / 2);
+  singleCropDraft.box = [left, top, left + side, top + side];
+  state.square_photos = (state.square_photos || []).filter(
+    (id) => id !== singleCropPhotoId,
+  );
+  renderEditor();
+  queueSingleCropApply();
+}
+
 function setPhotoMode(mode) {
   if (busy || (mode === "crop" && !state.photos.length)) return;
   if (photoMode === "crop" && (singleCropDirty() || singleCropApplyTimer)) {
@@ -1379,11 +1586,22 @@ function setPhotoMode(mode) {
     });
     return;
   }
-  photoMode = mode;
-  deleteMode = mode === "delete";
+  const entering = photoMode !== mode;
+  const keepSelection = entering && (mode === "delete" || mode === "pair");
+  photoMode = photoMode === mode ? null : mode;
+  deleteMode = photoMode === "delete";
   clearSingleCrop();
-  selected = [];
-  draft = null;
+  if (!keepSelection) selected = [];
+  else if (photoMode === "pair" && selected.length > 2)
+    selected = selected.slice(0, 2);
+  draft =
+    photoMode === "pair" && selected.length === 2
+      ? {
+          id: crypto.randomUUID(),
+          left: side(selected[0]),
+          right: side(selected[1]),
+        }
+      : null;
   active = null;
   previewCropMode = false;
   previewBaseSize = null;
@@ -1395,10 +1613,13 @@ function setPhotoMode(mode) {
 $("#pair-mode").onclick = () => setPhotoMode("pair");
 $("#single-crop-mode").onclick = () => setPhotoMode("crop");
 $("#delete-mode").onclick = () => {
-  setPhotoMode(deleteMode ? "pair" : "delete");
+  setPhotoMode(deleteMode ? null : "delete");
 };
 $("#single-crop-reset").onclick = resetSingleCrop;
-$("#single-crop-cancel").onclick = cancelSingleCrop;
+$("#single-crop-square-toggle").onclick = toggleSingleCropSquare;
+$("#single-crop-square-crop").onclick = cropSingleToSquare;
+$("#select-all").onclick = toggleSelectAll;
+$("#square-selected").onclick = applySquareSelected;
 $("#delete-selected").onclick = deleteSelectedPhotos;
 $("#clear-selection").onclick = () => {
   selected = [];
@@ -1458,7 +1679,10 @@ $("#preview-crop-toggle").onclick = () => {
   renderTray();
   updateActions();
   schedulePreview(0);
-  if (active) persist();
+  if (active) {
+    persist();
+    flushPendingSave();
+  }
 };
 $("#preview-crop-reset").onclick = () => {
   const group = current();
@@ -1474,7 +1698,10 @@ $("#preview-crop-reset").onclick = () => {
   updateActions();
   invalidateExport();
   schedulePreview(0);
-  if (active) persist();
+  if (active) {
+    persist();
+    flushPendingSave();
+  }
 };
 $("#reset").onclick = async () => {
   if (
@@ -1503,7 +1730,7 @@ $("#reset").onclick = async () => {
     active = null;
     draft = null;
     selected = [];
-    photoMode = "pair";
+    photoMode = null;
     clearSingleCrop();
     previewCropMode = false;
     previewBaseSize = null;
@@ -1531,7 +1758,8 @@ $("#ai-analyze").onclick = async () => {
   try {
     const health = await api("/api/ai-health");
     if (!health.ok) {
-      const detail = health.detail || "AI 服務不可用，請先啟動 LM Studio 並載入模型";
+      const detail =
+        health.detail || "AI 服務不可用，請先啟動 LM Studio 並載入模型";
       $("#ai-progress").textContent = `無法開始分析：${detail}`;
       message(detail, true);
       return;
@@ -1571,7 +1799,9 @@ $("#ai-analyze").onclick = async () => {
       );
       if (runToken !== aiRunToken || result.cancelled) return;
       if (result.log_file) aiLogFile = result.log_file;
-      const item = result.results?.find((candidate) => candidate.id === photos[index].id);
+      const item = result.results?.find(
+        (candidate) => candidate.id === photos[index].id,
+      );
       if (!item) {
         renderAiResults();
         updateActions();
@@ -1585,9 +1815,10 @@ $("#ai-analyze").onclick = async () => {
     const proposed = aiResults.filter((x) => x.analysis && x.crop_box[1] > 0);
     const safe = proposed.filter((x) => !x.issues?.length).length;
     const failed = aiResults.filter((x) => !x.analysis).length;
-    const counts = proposed.length || failed
-      ? `安全 ${safe} 張、需確認 ${proposed.length - safe} 張、辨識失敗 ${failed} 張`
-      : "沒有裁切建議";
+    const counts =
+      proposed.length || failed
+        ? `安全 ${safe} 張、需確認 ${proposed.length - safe} 張、辨識失敗 ${failed} 張`
+        : "沒有裁切建議";
     $("#ai-progress").textContent =
       `分析完成 ${aiResults.length} / ${photos.length} 張（${counts}）` +
       (aiLogFile ? " · 診斷紀錄已保存於 logs 資料夾" : "");
@@ -1659,7 +1890,14 @@ $("#open-export").onclick = async () => {
 };
 initPreviewCrop();
 window.addEventListener("beforeunload", (event) => {
-  if (busy || exporting || savePending || saveTimer || saveInFlight || singleCropDirty()) {
+  if (
+    busy ||
+    exporting ||
+    savePending ||
+    saveTimer ||
+    saveInFlight ||
+    singleCropDirty()
+  ) {
     event.preventDefault();
     event.returnValue = "";
   }
