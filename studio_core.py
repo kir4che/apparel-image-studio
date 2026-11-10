@@ -25,7 +25,7 @@ PREVIEW_MAX_EDGE = 1600
 
 
 def default_state():
-    return {"product": "這一件商品", "photos": [], "groups": [], "format": "square", "ai_crops": {}, "photo_crops": {}}
+    return {"product": "這一件商品", "photos": [], "groups": [], "format": "square", "ai_crops": {}, "photo_crops": {}, "square_photos": []}
 
 
 def render_pair(images, mode="square"):
@@ -174,6 +174,20 @@ class StudioStore:
                 photo_crops[photo_id] = box
         self.state["photo_crops"] = photo_crops
 
+        square_photos = []
+        raw_square = self.state.get("square_photos", [])
+        if isinstance(raw_square, list):
+            seen_square = set()
+            for photo_id in raw_square:
+                if isinstance(photo_id, str) and photo_id in photo_ids and photo_id not in seen_square:
+                    square_photos.append(photo_id)
+                    seen_square.add(photo_id)
+                else:
+                    changed = True
+        else:
+            changed = True
+        self.state["square_photos"] = square_photos
+
         # The format selector was removed from the UI; collages are always 1:1.
         if self.state.get("format") != default_state()["format"]:
             self.state["format"] = default_state()["format"]
@@ -258,6 +272,8 @@ class StudioStore:
                 ai_crops.pop(photo_id, None)
                 self.state.setdefault("photo_crops", {}).pop(photo_id, None)
                 self._remove_photo_files(photo_id)
+            if "square_photos" in self.state:
+                self.state["square_photos"] = [pid for pid in self.state["square_photos"] if pid not in photo_ids]
             self._crop_cache = OrderedDict(
                 (key, value) for key, value in self._crop_cache.items() if key[0] not in photo_ids
             )
@@ -273,7 +289,7 @@ class StudioStore:
         if not isinstance(cleanup, bool):
             raise ValueError("清理選項格式無效")
         removed_files = self._remove_all_photo_files() if cleanup else 0
-        self.state.update(product="這一件商品", photos=[], groups=[], format="natural", ai_crops={}, photo_crops={})
+        self.state.update(product="這一件商品", photos=[], groups=[], format="natural", ai_crops={}, photo_crops={}, square_photos=[])
         self._crop_cache.clear()
         self._crop_cache_bytes = 0
         self.save()
@@ -361,7 +377,9 @@ class StudioStore:
             return self._update_unlocked(data)
 
     def _update_unlocked(self, data):
-        if not isinstance(data, dict) or set(data) not in ({"product", "groups", "format"}, {"product", "groups", "format", "ai_crops"}, {"product", "groups", "format", "photo_crops"}, {"product", "groups", "format", "ai_crops", "photo_crops"}):
+        required_keys = {"product", "groups", "format"}
+        allowed_keys = {"product", "groups", "format", "ai_crops", "photo_crops", "square_photos"}
+        if not isinstance(data, dict) or not required_keys.issubset(data) or not set(data).issubset(allowed_keys):
             raise ValueError("工作資料格式無效")
         if not isinstance(data["product"], str) or len(data["product"]) > 80 or data["format"] not in FORMATS:
             raise ValueError("商品名稱或輸出比例無效")
@@ -387,7 +405,12 @@ class StudioStore:
                 raise ValueError("照片裁切範圍超出照片")
             if box[2] - box[0] < 20 or box[3] - box[1] < 20:
                 raise ValueError("照片裁切範圍太窄，至少要保留 20 個像素")
-        self.state.update(product=data["product"], format="square", groups=groups, ai_crops=ai_crops, photo_crops=photo_crops)
+        square_photos = data.get("square_photos", self.state.get("square_photos", []))
+        if not isinstance(square_photos, list):
+            raise ValueError("1:1 補白資料格式無效")
+        if any(not isinstance(photo_id, str) or photo_id not in photo_ids for photo_id in square_photos) or len(set(square_photos)) != len(square_photos):
+            raise ValueError("1:1 補白資料無效")
+        self.state.update(product=data["product"], format="square", groups=groups, ai_crops=ai_crops, photo_crops=photo_crops, square_photos=square_photos)
         self.save()
 
     def crop(self, side, cache=True):
@@ -454,8 +477,14 @@ class StudioStore:
             info = {**info, "preview_crop": values}
         return image, {**info, "sources": [ls, rs], "preview": True}
 
-    def photo_preview(self, side, max_edge=PREVIEW_MAX_EDGE):
+    def photo_preview(self, side, max_edge=PREVIEW_MAX_EDGE, square=False):
         image, info = self.crop(side, cache=False)
+        if square:
+            side_len = max(image.width, image.height)
+            canvas = Image.new("RGB", (side_len, side_len), "white")
+            canvas.paste(image, ((side_len - image.width) // 2, (side_len - image.height) // 2))
+            image = canvas
+            info = {**info, "square": True}
         source_size = list(image.size)
         image.thumbnail((max_edge, max_edge), Image.Resampling.LANCZOS)
         return image, {**info, "size": list(image.size), "source_size": source_size, "preview": True}
@@ -470,7 +499,7 @@ class StudioStore:
             if not box:
                 top = self.state.get("ai_crops", {}).get(photo["id"], 0)
                 box = [0, top, photo["width"], photo["height"]]
-            photos.append([photo["id"], box])
+            photos.append([photo["id"], box, photo["id"] in self.state.get("square_photos", [])])
         groups = [
             {
                 "left": group["left"],
@@ -527,13 +556,20 @@ class StudioStore:
                 image = image.crop(crop_box)
             else:
                 crop_box = [0, 0, image.width, image.height]
+            is_square = photo["id"] in self.state.get("square_photos", [])
+            if is_square:
+                side = max(image.width, image.height)
+                canvas = Image.new("RGB", (side, side), "white")
+                canvas.paste(image, ((side - image.width) // 2, (side - image.height) // 2))
+                image = canvas
             data, quality = jpeg_bytes(image)
             filename = f"照片-{len(standalone_records) + 1:03d}.jpg"
             (run / filename).write_bytes(data)
             standalone_records.append({"type": "photo", "file": filename, "bytes": len(data),
                                        "jpeg_quality": quality, "name": photo["name"], "sha256": photo["id"],
                                        "crop_box": crop_box,
-                                       "ai_crop": bool(top)})
+                                       "ai_crop": bool(top),
+                                       "square": is_square})
         records.extend(standalone_records)
         for i, group in enumerate(self.state["groups"], 1):
             image, info = self.compose(group, self.state["format"])

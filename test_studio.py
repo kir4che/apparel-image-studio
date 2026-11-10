@@ -213,6 +213,21 @@ class StudioTests(unittest.TestCase):
         with Image.open(Path(exported["folder"]) / "照片-001.jpg") as image:
             self.assertEqual(image.size, (160, 260))
 
+    def test_square_photo_is_persisted_and_exported(self):
+        self.store.update({"product": "補白測試", "groups": [], "format": "square", "square_photos": [self.a["id"]]})
+        restored = StudioStore(self.store.folder, self.store.output)
+        self.assertEqual(restored.state["square_photos"], [self.a["id"]])
+        exported = restored.export()
+        with Image.open(Path(exported["folder"]) / "照片-001.jpg") as image:
+            self.assertEqual(image.size, (300, 300))
+            self.assertEqual(image.getpixel((0, 150)), (255, 255, 255))
+            self.assertEqual(image.getpixel((299, 150)), (255, 255, 255))
+        preview_img, preview_info = self.store.photo_preview(
+            {"photo": self.a["id"], "box": [0, 0, self.a["width"], self.a["height"]]}, square=True
+        )
+        self.assertEqual(preview_img.width, preview_img.height)
+        self.assertTrue(preview_info.get("square"))
+
     def test_preview_crop_is_saved_and_applied_after_studio(self):
         group = {**self.group, "preview_crop": [1000, 1000, 9000, 9000]}
         self.store.update({"product": "test", "groups": [group], "format": "square"})

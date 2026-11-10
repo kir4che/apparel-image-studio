@@ -156,9 +156,20 @@ class Handler(BaseHTTPRequestHandler):
             elif route.path.startswith("/api/photo/"):
                 photo = store.photo(route.path.split("/")[-1])
                 view = parse_qs(route.query).get("view", [""])[0]
-                if view == "crop" and store.state.get("photo_crops", {}).get(photo["id"]):
+                has_crop = bool(store.state.get("photo_crops", {}).get(photo["id"]))
+                is_square = photo["id"] in store.state.get("square_photos", [])
+                if view == "crop" and (has_crop or is_square):
                     image = read_image(store.folder / f'{photo["id"]}.png', formats=("PNG",))
-                    image = image.crop(store.state["photo_crops"][photo["id"]])
+                    if has_crop:
+                        image = image.crop(store.state["photo_crops"][photo["id"]])
+                    elif store.state.get("ai_crops", {}).get(photo["id"]):
+                        top = store.state["ai_crops"][photo["id"]]
+                        image = image.crop((photo["white"][0], top, photo["white"][1], photo["height"]))
+                    if is_square:
+                        side = max(image.width, image.height)
+                        canvas = Image.new("RGB", (side, side), "white")
+                        canvas.paste(image, ((side - image.width) // 2, (side - image.height) // 2))
+                        image = canvas
                     image.thumbnail((800, 800))
                     buf = io.BytesIO(); image.save(buf, "JPEG", quality=90)
                     self.send(buf.getvalue(), "image/jpeg")
@@ -222,7 +233,8 @@ class Handler(BaseHTTPRequestHandler):
             elif route.path == "/api/photo-preview":
                 if not isinstance(data, dict) or not isinstance(data.get("photo_id"), str):
                     raise ValueError("照片資料格式無效")
-                image, info = store.photo_preview({"photo": data["photo_id"], "box": data.get("box")})
+                is_square = bool(data.get("square")) or data.get("photo_id") in store.state.get("square_photos", [])
+                image, info = store.photo_preview({"photo": data["photo_id"], "box": data.get("box")}, square=is_square)
                 buf = io.BytesIO()
                 image.save(buf, "JPEG", quality=86, optimize=True)
                 self.send({"image": "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode(), "size": list(image.size), **info})
