@@ -257,7 +257,7 @@ function updateActions() {
   $("#cutout-run").textContent = cutoutBusy ? "正在去背…" : "去背照片";
   $("#cutout-run").title = state.cutout
     ? "移除勾選照片的背景，結果直接覆蓋原圖"
-    : "需先安裝 torch 與 transformers";
+    : "需先安裝 onnxruntime";
   previewToggle.disabled = single || !current() || busy;
   previewToggle.hidden = single || !current();
   previewToggle.textContent = previewCropMode ? "完成裁切" : "選擇裁切";
@@ -1854,9 +1854,14 @@ async function runCutout() {
   setBusy(true);
   cutoutBusy = true;
   updateActions();
-  if (state.cutout_download)
+  if (state.cutout_download) {
     $("#ai-progress").textContent =
-      "首次去背會先下載約 180 MB 模型，需要幾分鐘…";
+      "找不到去背模型 models/segformer_b3_clothes.onnx";
+    $("#ai-progress").classList.add("ai-progress-error");
+    cutoutBusy = false;
+    setBusy(false);
+    return;
+  }
   try {
     const result = await api("/api/cutout", {
       photo_ids: ids,

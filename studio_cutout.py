@@ -1,8 +1,7 @@
-"""服飾照去背：人物與衣物都保留、只去除背景，輸出透明 PNG。需要 torch 與 transformers。"""
+"""服飾照去背：人物與衣物都保留、只去除背景，輸出透明 PNG。需要 onnxruntime 與模型檔。"""
 from __future__ import annotations
 
 import importlib.util
-import os
 from pathlib import Path
 import re
 import tempfile
@@ -12,64 +11,69 @@ import time
 import numpy as np
 from PIL import Image, ImageFilter
 
-from garment_pilot import read_image
+from garment_pilot import MODEL_DIR, read_image
 
-MODEL_ID = "sayeed99/segformer_b3_clothes"
+MODEL_FILENAME = "segformer_b3_clothes.onnx"
 EDGE = 768          # 推論解析度，太小會漏掉衣角與鈕扣
-MASK_EDGE = 2400    # 遮罩長邊上限：4000px 以上的大圖直接插值 18 類 logits 會吃掉 GB 級記憶體
+MASK_EDGE = 2400    # 遮罩長邊上限：4000px 以上的大圖插值 18 類 logits 會吃掉大量記憶體
 MAX_EDGE = 2400     # 輸出長邊上限，避免 4000px 以上的透明 PNG 佔空間
 MARGIN = 0.04       # 四周留白比例，讓同批圖片尺寸一致
+MEAN = np.array([0.485, 0.456, 0.406], dtype=np.float32)
+STD = np.array([0.229, 0.224, 0.225], dtype=np.float32)
 
-_model = None
-_model_lock = threading.Lock()
+_session = None
+_session_lock = threading.Lock()
 
 
 def available():
     """不載入模型，只確認套件是否安裝。"""
-    return all(importlib.util.find_spec(name) for name in ("torch", "transformers"))
+    return importlib.util.find_spec("onnxruntime") is not None
 
 
 def downloaded():
-    """模型是否已在 Hugging Face 快取，用來提醒第一次要去下載。"""
-    base = os.environ.get("HF_HUB_CACHE") or os.path.join(
-        os.environ.get("HF_HOME", Path.home() / ".cache" / "huggingface"), "hub"
-    )
-    return (Path(base) / f"models--{MODEL_ID.replace('/', '--')}").is_dir()
+    """模型檔是否已就位。可攜版隨附在 models/，開發時用 export_onnx.py 產生。"""
+    return (MODEL_DIR / MODEL_FILENAME).is_file()
 
 
 def _load():
-    global _model
-    with _model_lock:
-        if _model is None:
-            from transformers import SegformerForSemanticSegmentation, SegformerImageProcessor
-            _model = (
-                SegformerImageProcessor.from_pretrained(MODEL_ID),
-                SegformerForSemanticSegmentation.from_pretrained(MODEL_ID).eval(),
-            )
-        return _model
+    global _session
+    with _session_lock:
+        if _session is None:
+            import onnxruntime as ort
+
+            _session = ort.InferenceSession(str(MODEL_DIR / MODEL_FILENAME), providers=["CPUExecutionProvider"])
+        return _session
 
 
-def subject_mask(image, processor, model):
+def _pixel_values(image):
+    """與 transformers 處理器一致：縮到 768 用 bilinear，換成 bicubic 會差 0.5。"""
+    img = image.convert("RGB").resize((EDGE, EDGE), Image.Resampling.BILINEAR)
+    arr = np.asarray(img, dtype=np.float32) / 255.0
+    return ((arr - MEAN) / STD).transpose(2, 0, 1)[None]
+
+
+def subject_mask(image, session):
     """人體解析模型把人物、衣物、配件標成非 0 類別、背景是 0，保留非背景再去背。
 
     真人穿搭照會留下人與衣服，平拍衣服照會留下衣服，同一條規則都適用。
     先在長邊 MASK_EDGE 內插值並 argmax，再把類別遮罩放大回原尺寸，
-    避免 18 類 logits 插值到 4000px 以上（約 1.7 GB 暫存）。
+    避免 18 類 logits 插值到 4000px 以上。
     """
-    import torch
-
-    inputs = processor(images=image, size={"height": EDGE, "width": EDGE}, return_tensors="pt")
-    with torch.inference_mode():
-        logits = model(**inputs).logits
+    logits = session.run(None, {"pixel_values": _pixel_values(image)})[0][0]
     scale = min(1.0, MASK_EDGE / max(image.size))
-    size = (max(1, round(image.height * scale)), max(1, round(image.width * scale)))
-    labels = torch.nn.functional.interpolate(
-        logits, size=size, mode="bilinear", align_corners=False
-    ).argmax(1)[0].byte().numpy()
-    if size != (image.height, image.width):
-        labels = np.asarray(
-            Image.fromarray(labels).resize((image.width, image.height), Image.Resampling.NEAREST)
-        )
+    size = (max(1, round(image.width * scale)), max(1, round(image.height * scale)))
+    # 逐類別放大並即時比較，避免一次佔用 18 張 float 圖層。
+    best = labels = None
+    for index, logit in enumerate(logits):
+        up = np.asarray(Image.fromarray(logit).resize(size, Image.Resampling.BILINEAR))
+        if best is None:
+            best, labels = up.copy(), np.zeros(up.shape, dtype="uint8")
+            continue
+        better = up > best
+        labels[better] = index
+        best[better] = up[better]
+    if size != image.size:
+        labels = np.asarray(Image.fromarray(labels).resize(image.size, Image.Resampling.NEAREST))
     return labels != 0
 
 
@@ -105,17 +109,21 @@ def finish_cutout(image, mask):
 def cutout_photos(store, photo_ids):
     if not available():
         raise ValueError(
-            "尚未安裝去背模型，請在工具資料夾執行 "
-            ".venv/bin/python -m pip install torch transformers，再重新啟動工具"
+            "尚未安裝去背引擎，請在工具資料夾執行 "
+            ".venv/bin/python -m pip install onnxruntime，再重新啟動工具"
         )
-    processor, model = _load()
+    if not downloaded():
+        raise ValueError(
+            f"找不到去背模型 {MODEL_FILENAME}，請確認 models 資料夾（開發時可執行 export_onnx.py 產生）"
+        )
+    session = _load()
     run = Path(tempfile.mkdtemp(prefix=time.strftime("%Y%m%d-%H%M%S-") + "去背-", dir=store.output))
     results, skipped = [], []
     for photo_id in photo_ids:
         photo = store.photo(photo_id)
         image = read_image(store.folder / f"{photo_id}.png", formats=("PNG",))
         try:
-            mask = subject_mask(image, processor, model)
+            mask = subject_mask(image, session)
             cutout = finish_cutout(image, mask)
         except ValueError:
             skipped.append(photo["name"])

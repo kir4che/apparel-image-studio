@@ -69,13 +69,17 @@ models/
 在照片庫勾選要處理的照片，按「批次處理」的「去背照片」後，透明結果會**直接覆蓋照片庫裡的原圖與預覽**（尺寸不變，既有裁切與配對不會跑掉），
 同時另存一份透明 PNG 到 `outputs/<時間>-去背-*/001-原檔名-去背.png`。
 
+去背用 [sayeed99/segformer_b3_clothes](https://huggingface.co/sayeed99/segformer_b3_clothes)（MIT）轉成的 ONNX 模型，
+執行時只要 `onnxruntime`，不需要安裝 torch。Windows 可攜版已內建引擎與模型，解壓即可使用。
+
+要自己產生或更新模型（需要 torch、transformers、onnxscript，只有這一步用得到）：
+
 ```bash
-.venv/bin/python -m pip install torch transformers
+.venv/bin/python -m pip install torch transformers onnxscript onnx
+.venv/bin/python export_onnx.py
 ```
 
-第一次執行會下載約 180 MB 的
-[sayeed99/segformer_b3_clothes](https://huggingface.co/sayeed99/segformer_b3_clothes)（MIT）。
-Windows 可攜版沒有打包 torch，所以去背按鈕會停用（滑過按鈕會提示需先安裝）。
+匯出後檔案在 `models/segformer_b3_clothes.onnx`（約 185 MB，不進 git）。
 
 > [!IMPORTANT]
 > 去背會覆蓋工作檔，原圖請自行保留一份。去背輪廓會貼著原圖，不會變成平拍的攤平形狀；
@@ -94,7 +98,7 @@ Windows 可攜版沒有打包 torch，所以去背按鈕會停用（滑過按鈕
 常用檢查：
 
 ```bash
-.venv/bin/python -m py_compile garment_pilot.py studio_server.py studio_cutout.py build_windows.py
+.venv/bin/python -m py_compile garment_pilot.py studio_server.py studio_cutout.py export_onnx.py build_windows.py
 node --check studio-web/app.js
 .venv/bin/python -m unittest test_garment_pilot.py test_studio.py test_studio_changes.py test_cutout.py
 git diff --check
@@ -111,7 +115,8 @@ python build_windows.py
 ```text
 studio_server.py   本機服務與 API
 studio_core.py     匯入、裁切、拼圖、匯出
-studio_cutout.py   去背（SegFormer）
+studio_cutout.py   去背（SegFormer ONNX）
+export_onnx.py     匯出 ONNX 去背模型（打包用）
 garment_pilot.py   AI 裁切與模型連線
 studio-web/        前端介面
 build_windows.py   Windows 打包

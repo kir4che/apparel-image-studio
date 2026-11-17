@@ -38,6 +38,14 @@ jobs:
         run: |
           uv pip install --system -r requirements.txt pyinstaller
 
+      - name: Install ONNX export tooling
+        run: |
+          uv pip install --system torch --index-url https://download.pytorch.org/whl/cpu
+          uv pip install --system transformers onnxscript onnx
+
+      - name: Export cutout model
+        run: python export_onnx.py
+
       - name: Build executable
         run: python build_windows.py
 

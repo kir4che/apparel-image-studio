@@ -1,3 +1,4 @@
 Pillow==12.3.0
 numpy>=2
 llama-cpp-python>=0.3.35
+onnxruntime>=1.20

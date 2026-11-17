@@ -40,22 +40,15 @@ class FinishCutoutTest(unittest.TestCase):
 class SubjectMaskTest(unittest.TestCase):
     """大圖也要回原尺寸遮罩，且不在原尺寸插值 18 類 logits。"""
 
-    @unittest.skipUnless(available(), "需要 torch 與 transformers")
     def test_large_image_mask_matches_source_size(self):
-        import torch
-
-        class Processor:
-            def __call__(self, images, size, return_tensors):
-                return {}
-
-        class Model:
-            def __call__(self, **inputs):
-                logits = torch.zeros(1, 18, 192, 192)
+        class Session:
+            def run(self, outputs, feeds):
+                logits = np.zeros((1, 18, 192, 192), dtype=np.float32)
                 logits[:, 4, 60:130, 70:120] = 5  # 上衣
-                return type("Out", (), {"logits": logits})()
+                return [logits]
 
         image = Image.new("RGB", (4000, 2400), "white")
-        mask = subject_mask(image, Processor(), Model())
+        mask = subject_mask(image, Session())
         self.assertEqual(mask.shape, (2400, 4000))
         self.assertEqual(mask.dtype, np.bool_)
         self.assertTrue(mask[1200, 2000])
@@ -86,7 +79,7 @@ class CutoutPhotosTest(unittest.TestCase):
     def test_skipped_photo_does_not_leave_gap(self):
         import studio_cutout
 
-        def mask(image, processor, model):
+        def mask(image, session):
             found = np.zeros((image.height, image.width), dtype=bool)
             if image.size == (40, 40):  # 10×10 的那張當成找不到主體
                 found[10:30, 10:30] = True
@@ -95,7 +88,8 @@ class CutoutPhotosTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             store = self._store(Path(tmp), {"a": (40, 40), "b": (10, 10), "c": (40, 40)})
             with mock.patch.multiple(studio_cutout, available=lambda: True,
-                                     _load=lambda: (None, None), subject_mask=mask):
+                                     downloaded=lambda: True,
+                                     _load=lambda: None, subject_mask=mask):
                 result = studio_cutout.cutout_photos(store, ["a", "b", "c"])
             names = sorted(path.name for path in Path(result["folder"]).iterdir())
             self.assertEqual(names, ["001-a-去背.png", "002-c-去背.png"])
@@ -110,8 +104,9 @@ class CutoutPhotosTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             store = self._store(Path(tmp), {"a": (10, 10)})
             with mock.patch.multiple(studio_cutout, available=lambda: True,
-                                     _load=lambda: (None, None),
-                                     subject_mask=lambda image, p, m: np.zeros((image.height, image.width), dtype=bool)):
+                                     downloaded=lambda: True,
+                                     _load=lambda: None,
+                                     subject_mask=lambda image, session: np.zeros((image.height, image.width), dtype=bool)):
                 with self.assertRaises(ValueError):
                     studio_cutout.cutout_photos(store, ["a"])
             self.assertEqual(list(store.output.iterdir()), [])

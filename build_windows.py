@@ -26,8 +26,9 @@ def build_exe():
         "--add-data", f"{ROOT / 'studio-web'};studio-web",
         "--add-data", f"{ROOT / 'requirements.txt'};.",
         "--collect-all", "llama_cpp",
+        "--collect-all", "onnxruntime",
         "--hidden-import", "PIL",
-        # 可攜版沒有去背用的 torch，避免在裝了 torch 的建置機上把 2–3 GB 一起打包。
+        # 去背改用 onnxruntime，torch 只在開發／打包時匯出模型用到。
         "--exclude-module", "torch",
         "--exclude-module", "transformers",
         str(ROOT / "studio_server.py"),
@@ -67,6 +68,8 @@ def copy_files():
         "4. 瀏覽器會自動開啟操作介面\n"
         "5. 照片請放入「使用者照片」資料夾\n"
         "6. 匯出的圖片會在「outputs」資料夾\n\n"
+        "去背功能已內建（models/segformer_b3_clothes.onnx），不需要另外安裝任何東西；\n"
+        "缺少這個檔案時，去背按鈕會提示找不到模型。\n\n"
         "注意：首次啟動可能需要較長時間載入模型\n",
         encoding="utf-8"
     )
