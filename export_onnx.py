@@ -11,6 +11,8 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
+sys.stdout.reconfigure(encoding="utf-8")  # Windows 主控台預設 cp1252，中文訊息會爆
+
 ROOT = Path(__file__).resolve().parent
 OUT = ROOT / "models" / "segformer_b3_clothes.onnx"
 MODEL_ID = "sayeed99/segformer_b3_clothes"
