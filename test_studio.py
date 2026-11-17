@@ -47,6 +47,24 @@ class StudioTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.store.import_photo("photo.svg", picture("red"))
 
+    def test_cutout_overwrites_photo_and_preview(self):
+        self.store.import_photo("另一張.png", picture("green"))
+        rgba = Image.new("RGBA", (self.a["width"], self.a["height"]), (0, 0, 0, 0))
+        rgba.paste((10, 120, 200, 255), (40, 40, 100, 100))
+        signature = self.store._export_signature()
+        path = self.store.folder / f'{self.a["id"]}.png'
+        before = path.read_bytes()
+        self.store.replace_photo_image(self.a["id"], rgba)
+        self.assertNotEqual(path.read_bytes(), before)
+        self.assertNotEqual(signature, self.store._export_signature())
+        thumb = Image.open(self.store.folder / f'{self.a["id"]}-thumb.jpg')
+        self.assertEqual(thumb.mode, "RGB")
+        self.assertEqual(thumb.getpixel((0, 0)), (255, 255, 255))
+        cropped, _ = self.store.crop({"photo": self.a["id"], "box": [0, 0, 100, 100]})
+        self.assertEqual(cropped.getpixel((0, 0)), (255, 255, 255))
+        with self.assertRaises(ValueError):
+            self.store.replace_photo_image(self.a["id"], Image.new("RGBA", (10, 10)))
+
     def test_ai_log_records_diagnostics_without_source_image_data(self):
         log_file = write_ai_log("run/windows-test", {
             "event": "photo_finish", "outcome": "failed",

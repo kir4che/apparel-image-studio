@@ -69,6 +69,15 @@ def jpeg_bytes(image):
     return data.getvalue(), 95
 
 
+def flatten(image):
+    """去背留下的透明區域在白色底上呈現，JPEG 與拼圖都不支援 alpha。"""
+    if image.mode == "RGBA":
+        background = Image.new("RGB", image.size, "white")
+        background.paste(image, mask=image.getchannel("A"))
+        return background
+    return image if image.mode == "RGB" else image.convert("RGB")
+
+
 class StudioStore:
     def __init__(self, folder=None, output=None):
         self.folder = Path(folder or ROOT / "studio-data")
@@ -241,6 +250,19 @@ class StudioStore:
                 (self.folder / f"{photo_id}{suffix}").unlink()
             except OSError:
                 pass
+
+    def replace_photo_image(self, photo_id, image):
+        """用去背後的圖覆蓋原圖與預覽；尺寸不變，既有裁切與配對座標才不會失效。"""
+        with self._lock:
+            photo = self.photo(photo_id)
+            if image.size != (photo["width"], photo["height"]):
+                raise ValueError("去背圖尺寸與原圖不符")
+            image.save(self.folder / f"{photo_id}.png")
+            preview = flatten(image)
+            preview.thumbnail((800, 800), Image.Resampling.LANCZOS)
+            preview.save(self.folder / f"{photo_id}-thumb.jpg", quality=90, icc_profile=SRGB_BYTES)
+            self._crop_cache.clear()
+            self._crop_cache_bytes = 0
 
     def _remove_all_photo_files(self):
         removed = 0
@@ -422,7 +444,7 @@ class StudioStore:
             return cached.copy(), dict(info)
         with Image.open(self.folder / f'{photo["id"]}.png') as image:
             box = side["box"]
-            cropped = image.crop(box)
+            cropped = flatten(image.crop(box))
         info = {"name": photo["name"], "sha256": photo["id"], "crop_box": box}
         if cache:
             entry_bytes = cropped.width * cropped.height * 3
@@ -499,7 +521,8 @@ class StudioStore:
             if not box:
                 top = self.state.get("ai_crops", {}).get(photo["id"], 0)
                 box = [0, top, photo["width"], photo["height"]]
-            photos.append([photo["id"], box, photo["id"] in self.state.get("square_photos", [])])
+            photos.append([photo["id"], box, photo["id"] in self.state.get("square_photos", []),
+                           (self.folder / f'{photo["id"]}.png').stat().st_mtime_ns])
         groups = [
             {
                 "left": group["left"],

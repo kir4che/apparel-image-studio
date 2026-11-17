@@ -3,9 +3,12 @@
 .ai-panel h3{font-size:15px}
 .ai-panel .section-heading p{font-size:11px}
 .ai-model{font-size:10px;color:var(--muted);white-space:nowrap}
-.ai-action{width:100%;justify-content:center;background:var(--accent-soft);border-color:#a8b9d5;color:var(--accent)}
+.ai-action{flex:1 1 140px;justify-content:center;background:var(--accent-soft);border-color:#a8b9d5;color:var(--accent)}
 .ai-action:hover:not(:disabled){background:#dbe6f7;border-color:var(--accent)}
+.ai-actions{display:flex;flex-wrap:wrap;gap:6px}
 .ai-progress{font-size:11px;color:var(--muted);min-height:1.7em;margin-top:7px}
+.ai-progress:empty{display:none}
+.ai-progress-error{color:#9c352d}
 .ai-results{margin-top:12px}
 .ai-tools{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:8px;font-size:11px}
 .ai-select-all,.ai-filter-label{display:flex;align-items:center;gap:5px;color:var(--ink);cursor:pointer}

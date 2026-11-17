@@ -103,8 +103,6 @@
                 aria-pressed="false"
               >
                 單張裁切</button
-              ><button id="square-selected" class="small secondary" disabled>
-                1:1 補白</button
               ><button
                 id="delete-mode"
                 class="mode-button danger"
@@ -134,18 +132,35 @@
             <summary>匯入時需要注意的照片</summary>
             <ul></ul>
           </details>
-          <p class="library-foot">
-            已配對照片會從照片庫隱藏，刪除配對後可再次選取。
-          </p>
           <section class="ai-panel" aria-labelledby="ai-title">
             <div class="section-heading">
-              <div>
-                <h3 id="ai-title">AI 批次裁切</h3>
-                <p>偵測完整頭部，只移除上半臉上方的整條橫帶。</p>
-              </div>
-              <span class="ai-model">Qwen3.5 2B · 本機</span>
+              <h3 id="ai-title">批次處理</h3>
+              <span id="ai-scope" class="ai-model">先勾選照片</span>
             </div>
-            <button id="ai-analyze" class="ai-action" disabled>分析照片</button>
+            <div class="ai-actions">
+              <button
+                id="ai-analyze"
+                class="ai-action"
+                title="分析勾選照片的上半部，產生裁切建議"
+                disabled
+              >
+                AI 裁切上半部</button
+              ><button
+                id="cutout-run"
+                class="ai-action"
+                title="移除勾選照片的背景，結果直接覆蓋原圖"
+                disabled
+              >
+                去背照片</button
+              ><button
+                id="square-selected"
+                class="ai-action"
+                title="把勾選照片補成 1:1 白底，再按一次取消"
+                disabled
+              >
+                1:1 補白
+              </button>
+            </div>
             <p id="ai-progress" class="ai-progress" aria-live="polite"></p>
             <div id="ai-results" class="ai-results" hidden></div>
           </section>
@@ -174,7 +189,6 @@
               <div id="preview-empty">
                 <svg><use href="#i-pair" /></svg>
                 <p>兩張照片，一張拼圖</p>
-                <span>依勾選順序放在左、右兩側</span>
               </div>
               <div id="preview-frame" hidden>
                 <img id="preview" alt="目前左右拼圖的實際輸出預覽" />
@@ -219,15 +233,12 @@
         <div class="section-heading">
           <div>
             <h2 id="pairs-title">已配對 <span id="group-count">0 組</span></h2>
-            <p>未用於拼圖的照片與已完成拼圖會一併匯出</p>
           </div>
           <button id="export" class="primary" disabled>
             <svg><use href="#i-download" /></svg><span>匯出所有圖片</span>
           </button>
         </div>
-        <div id="pair-tray" class="pair-tray">
-          <p class="tray-empty">配對完成的照片會放在這裡</p>
-        </div>
+        <div id="pair-tray" class="pair-tray"></div>
         <div id="export-result" class="export-result" hidden>
           <div>
             <strong id="export-title"></strong>
@@ -237,6 +248,5 @@
         </div>
       </section>
     </main>
-    <footer>原檔不修改 · 照片不傳雲端 · 每次匯出另存新資料夾</footer>
   </body>
 </html>

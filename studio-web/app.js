@@ -13,6 +13,7 @@ let state,
   active = null,
   busy = false,
   aiBusy = false,
+  cutoutBusy = false,
   exporting = false,
   deleteMode = false,
   photoMode = null,
@@ -245,8 +246,18 @@ function updateActions() {
     `刪除已選${selected.length ? ` ${selected.length} 張` : ""}`;
   $("#export").disabled = !state.photos.length || busy;
   $("#product").disabled = busy;
-  $("#ai-analyze").disabled = !state.photos.length || busy;
-  $("#ai-analyze").textContent = aiBusy ? "取消分析" : "分析照片";
+  const selectedCount = selected.length;
+  const scope = $("#ai-scope");
+  if (scope)
+    scope.textContent = selectedCount ? `已選 ${selectedCount} 張` : "先勾選照片";
+  $("#ai-analyze").disabled = !selectedCount || busy || deleteMode || cutoutBusy;
+  $("#ai-analyze").textContent = aiBusy ? "取消分析" : "AI 裁切上半部";
+  $("#cutout-run").disabled =
+    !selectedCount || busy || deleteMode || aiBusy || !state.cutout;
+  $("#cutout-run").textContent = cutoutBusy ? "正在去背…" : "去背照片";
+  $("#cutout-run").title = state.cutout
+    ? "移除勾選照片的背景，結果直接覆蓋原圖"
+    : "需先安裝 torch 與 transformers";
   previewToggle.disabled = single || !current() || busy;
   previewToggle.hidden = single || !current();
   previewToggle.textContent = previewCropMode ? "完成裁切" : "選擇裁切";
@@ -687,6 +698,7 @@ function cancelAiAnalysis(showStatus = true) {
   aiLogFile = null;
   aiFilter = "all";
   $("#ai-progress").textContent = showStatus ? "分析已取消" : "";
+  $("#ai-progress").classList.remove("ai-progress-error");
   $("#ai-progress").title = "";
   renderAiResults();
   message("");
@@ -724,8 +736,6 @@ function renderTray() {
   const focusedDelete =
     document.activeElement.classList.contains("pair-delete");
   tray.replaceChildren();
-  if (!state.groups.length)
-    tray.append(node("p", "配對完成的照片會放在這裡", "tray-empty"));
   state.groups.forEach((g, index) => {
     const item = node("div", null, "pair-item");
     const button = node("button", null, "pair-card");
@@ -900,11 +910,9 @@ function renderEditor() {
   const single = singleMode && singleCropDraft;
   const pairMode = photoMode === "pair";
   $("#editor-title").textContent = singleMode ? "單張照片裁切" : "拼圖預覽";
-  $(".editor > .section-heading").hidden = !pairMode && !singleMode;
-  $("#preview-stage").hidden = !pairMode;
+  $("#preview-stage").hidden = single;
   $(".pair-actions").hidden = !pairMode;
   $("#preview-empty p").textContent = "兩張照片，一張拼圖";
-  $("#preview-empty span").textContent = "依勾選順序放在左、右兩側";
   $("#single-crop-editor").hidden = !single;
   $("#single-crop-editor").replaceChildren();
   if (single)
@@ -937,7 +945,7 @@ function cropEditor(s, key, options = {}) {
   const stage = node("div", null, "crop-stage"),
     image = node("img"),
     box = node("div", null, "crop-box");
-  image.src = `/api/photo/${p.id}`;
+  image.src = `/api/photo/${p.id}${cropVersions.has(p.id) ? `?t=${cropVersions.get(p.id)}` : ""}`;
   image.alt = `${label}照片與裁切框`;
   image.draggable = false;
   const handles = {};
@@ -1750,7 +1758,7 @@ $("#reset").onclick = async () => {
   }
 };
 $("#ai-analyze").onclick = async () => {
-  if (busy || !state.photos.length) return;
+  if (busy || !selected.length) return;
   if (aiBusy) {
     cancelAiAnalysis();
     return;
@@ -1761,12 +1769,12 @@ $("#ai-analyze").onclick = async () => {
       const detail =
         health.detail || "AI 服務不可用，請先啟動 LM Studio 並載入模型";
       $("#ai-progress").textContent = `無法開始分析：${detail}`;
-      message(detail, true);
+      $("#ai-progress").classList.add("ai-progress-error");
       return;
     }
   } catch (error) {
-    $("#ai-progress").textContent = `無法開始分析：${error.message}`;
-    message("無法連線到 AI 服務：" + error.message, true);
+    $("#ai-progress").textContent = `無法開始分析：無法連線到 AI 服務（${error.message}）`;
+    $("#ai-progress").classList.add("ai-progress-error");
     return;
   }
   aiBusy = true;
@@ -1776,12 +1784,13 @@ $("#ai-analyze").onclick = async () => {
   aiRunId = runId;
   aiLogFile = null;
   aiResults = [];
-  $("#ai-progress").textContent = `準備分析 ${state.photos.length} 張照片…`;
+  const photos = state.photos.filter((photo) => selected.includes(photo.id));
+  $("#ai-progress").textContent = `準備分析 ${photos.length} 張照片…`;
+  $("#ai-progress").classList.remove("ai-progress-error");
   $("#ai-progress").title = "";
   renderAiResults();
   updateActions();
   try {
-    const photos = [...state.photos];
     for (let index = 0; index < photos.length; index++) {
       if (runToken !== aiRunToken) return;
       const progress = `正在分析第 ${index + 1} / ${photos.length} 張：${photos[index].name}`;
@@ -1827,6 +1836,7 @@ $("#ai-analyze").onclick = async () => {
   } catch (error) {
     if (error.name !== "AbortError" && runToken === aiRunToken) {
       $("#ai-progress").textContent = `分析未完成：${error.message}`;
+      $("#ai-progress").classList.add("ai-progress-error");
       message(error.message, true);
     }
   } finally {
@@ -1838,6 +1848,36 @@ $("#ai-analyze").onclick = async () => {
     }
   }
 };
+async function runCutout() {
+  if (busy || aiBusy || deleteMode || !selected.length || !state.cutout) return;
+  const ids = [...selected];
+  setBusy(true);
+  cutoutBusy = true;
+  updateActions();
+  if (state.cutout_download)
+    $("#ai-progress").textContent =
+      "首次去背會先下載約 180 MB 模型，需要幾分鐘…";
+  try {
+    const result = await api("/api/cutout", {
+      photo_ids: ids,
+    });
+    exportBatch = result.batch;
+    $("#export-title").textContent = `去背完成 ${result.count} 張圖片`;
+    $("#export-path").textContent = result.folder;
+    $("#export-result").hidden = false;
+    result.results.forEach((item) => markPhotoPreviewChanged(item.id));
+    await refresh();
+    if (result.skipped.length)
+      message(`找不到主體，已略過：${result.skipped.join("、")}`, true);
+  } catch (error) {
+    message(error.message, true);
+  } finally {
+    $("#ai-progress").textContent = "";
+    cutoutBusy = false;
+    setBusy(false);
+  }
+}
+$("#cutout-run").onclick = runCutout;
 $("#export").onclick = async () => {
   if (!state.photos.length) return;
   const restoreExportFocus = document.activeElement === $("#export");

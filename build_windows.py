@@ -27,6 +27,9 @@ def build_exe():
         "--add-data", f"{ROOT / 'requirements.txt'};.",
         "--collect-all", "llama_cpp",
         "--hidden-import", "PIL",
+        # 可攜版沒有去背用的 torch，避免在裝了 torch 的建置機上把 2–3 GB 一起打包。
+        "--exclude-module", "torch",
+        "--exclude-module", "transformers",
         str(ROOT / "studio_server.py"),
     ]
     subprocess.run(cmd, check=True)

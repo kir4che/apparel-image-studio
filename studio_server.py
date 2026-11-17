@@ -34,6 +34,9 @@ from garment_pilot import (
     top_only_crop_box,
 )
 from studio_core import StudioStore
+from studio_cutout import available as cutout_available
+from studio_cutout import downloaded as cutout_downloaded
+from studio_cutout import cutout_photos
 
 if getattr(sys, 'frozen', False):
     WEB = Path(getattr(sys, '_MEIPASS', ROOT)) / "studio-web"
@@ -148,7 +151,8 @@ class Handler(BaseHTTPRequestHandler):
                 engine = get_engine()
                 self.send({"engine": engine})
             elif route.path == "/api/state":
-                self.send({"token": self.server.token, **store.state})
+                self.send({"token": self.server.token, "cutout": cutout_available(),
+                           "cutout_download": cutout_available() and not cutout_downloaded(), **store.state})
             elif route.path in ("/", "/app.js", "/style.css", "/ai.css"):
                 path = WEB / {"/": "index.html", "/app.js": "app.js", "/style.css": "style.css", "/ai.css": "ai.css"}[route.path]
                 mime = {".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8"}[path.suffix]
@@ -362,6 +366,22 @@ class Handler(BaseHTTPRequestHandler):
                     }) or log_file
                 self.send({"results": results, "model": MODEL, "run_id": run_id,
                            "log_file": log_file, "model_identity": model_identity})
+            elif route.path == "/api/cutout":
+                if not isinstance(data, dict):
+                    raise ValueError("去背資料格式無效")
+                ids = data.get("photo_ids")
+                if ids is not None and (not isinstance(ids, list) or any(not isinstance(x, str) for x in ids)):
+                    raise ValueError("照片清單格式無效")
+                with store._lock:
+                    photo_ids = [item["id"] for item in store.state["photos"]] if ids is None else list(ids)
+                photo_ids = list(dict.fromkeys(photo_ids))
+                if not photo_ids:
+                    raise ValueError("先匯入照片")
+                if len(photo_ids) > 100:
+                    raise ValueError("一次最多去背 100 張照片")
+                result = cutout_photos(store, photo_ids)
+                self.server.exports.add(result["batch"])
+                self.send(result)
             elif route.path == "/api/export":
                 result = store.export()
                 self.server.exports.add(result["batch"])
@@ -373,7 +393,7 @@ class Handler(BaseHTTPRequestHandler):
             elif route.path == "/api/open-export":
                 batch = data.get("batch")
                 if batch not in self.server.exports:
-                    raise ValueError("請先匯出拼圖")
+                    raise ValueError("請先產生輸出")
                 import sys
                 if sys.platform == "win32":
                     os.startfile(str(store.output / batch))
