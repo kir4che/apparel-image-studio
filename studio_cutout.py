@@ -1,7 +1,6 @@
 """服飾照去背：人物與衣物都保留、只去除背景，輸出透明 PNG。需要 onnxruntime 與模型檔。"""
 from __future__ import annotations
 
-import importlib.util
 from pathlib import Path
 import re
 import tempfile
@@ -23,11 +22,20 @@ STD = np.array([0.229, 0.224, 0.225], dtype=np.float32)
 
 _session = None
 _session_lock = threading.Lock()
+_ort = None
 
 
 def available():
-    """不載入模型，只確認套件是否安裝。"""
-    return importlib.util.find_spec("onnxruntime") is not None
+    """不載入模型，只確認套件能 import（打包成 exe 後 find_spec 不一定看得到）。"""
+    global _ort
+    if _ort is None:
+        try:
+            import onnxruntime
+
+            _ort = onnxruntime
+        except ImportError:
+            _ort = False
+    return _ort is not False
 
 
 def downloaded():
